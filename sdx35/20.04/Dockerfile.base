@@ -51,6 +51,12 @@ RUN cp -rfv /dtc-1.6.0/* /pkg/tools/dtc/
 RUN cp -rfv /dtc-1.6.0/* /pkg/qct/software/boottools/
 RUN rm -rf /dtc-1.6.0.tar.gz /dtc-1.6.0/
 
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 3
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 2
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
+
 RUN git config --global user.name "firmware"
 RUN git config --global user.email "firmware@cavliwireless.com"
 
