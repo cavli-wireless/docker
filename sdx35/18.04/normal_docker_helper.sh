@@ -88,11 +88,12 @@ docker run --name $DOCKER_CONTAINER \
 docker start $DOCKER_CONTAINER
 docker exec -u $__USERNAME $DOCKER_CONTAINER git config --global user.name "firmware"
 docker exec -u $__USERNAME $DOCKER_CONTAINER git config --global user.email "firmware@cavliwireless.com"
-# docker exec -u root $DOCKER_CONTAINER tar -xzf /home/rclone.tgz -C /home/$__USERNAME/
-# docker exec -u root $DOCKER_CONTAINER cp /home/$__USERNAME/rclone/rclone /usr/local/bin/rclone
-# docker exec -u root $DOCKER_CONTAINER chmod +x /usr/local/bin/rclone
-# docker exec -u root $DOCKER_CONTAINER cp /home/$__USERNAME/rclone/rclone_fw_share.conf /home/$__USERNAME
-# docker exec -u root $DOCKER_CONTAINER bash -c "cat /home/$__USERNAME/rclone/bash_aliases >> /home/$__USERNAME/.bash_aliases"
+docker cp ../../tools/rclone.tgz $DOCKER_CONTAINER:/home/rclone.tgz
+docker exec -u root $DOCKER_CONTAINER tar -xzf /home/rclone.tgz -C /home/$__USERNAME/
+docker exec -u root $DOCKER_CONTAINER cp /home/$__USERNAME/rclone/rclone /usr/local/bin/rclone
+docker exec -u root $DOCKER_CONTAINER chmod +x /usr/local/bin/rclone
+docker exec -u root $DOCKER_CONTAINER cp /home/$__USERNAME/rclone/rclone_fw_share.conf /home/$__USERNAME
+docker exec -u root $DOCKER_CONTAINER bash -c "cat /home/$__USERNAME/rclone/bash_aliases >> /home/$__USERNAME/.bash_aliases"
 docker stop $DOCKER_CONTAINER
 echo "DONE create container $DOCKER_CONTAINER for user $__USERNAME"
 echo "Workspace: /data"
