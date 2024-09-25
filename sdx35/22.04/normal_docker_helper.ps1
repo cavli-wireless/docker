@@ -5,8 +5,6 @@ param(
     [Parameter()]
     [switch]$s,
     [Parameter()]
-    [string]$w,
-    [Parameter()]
     [string]$t,
     [Parameter()]
     [switch]$h
@@ -30,7 +28,6 @@ function Print-Usage {
 # Default values
 ${DRYRUNCMD} = ""
 ${SUDO} = ""
-${WORK_PATH} = ""
 ${TOOL_PATH} = ""
 
 if ($h) {
@@ -46,9 +43,6 @@ if ($s) {
     ${SUDO} = "sudo"
 }
 
-if ($w) {
-    ${WORK_PATH} = $w
-}
 
 if ($t) {
     ${TOOL_PATH} = $t
@@ -56,8 +50,6 @@ if ($t) {
 
 # Get user and group info
 $__USERNAME = "builder"
-# $__UID = (id -u $null)  # Using PowerShell native command for UID might require adjustment based on your environment
-# $__GID = (id -g $null)
 $__UID = 1000
 $__GID = 1000
 ${DOCKER_PRV_NAME} = "build_sdx35_jammy"
@@ -78,21 +70,6 @@ docker rmi "${DOCKER_IMG}:$__USERNAME" 2> $null
 # Build new Docker image
 docker build -t "${DOCKER_IMG}:$__USERNAME" .
 
-# Define whitelist directories
-$DIR_WHITELIST = @(
-    "~/.ssh"
-)
-
-# Build volume mounts
-$CMD = ""
-foreach (${path} in $DIR_WHITELIST) {
-    if (Test-Path ${path}) {
-        $CMD += " -v ${path}:${path}"
-    } else {
-        Write-Host "Warning: Source path ${path} does not exist."
-    }
-}
-
 # Run Docker container with the required mounts
 docker run --name ${DOCKER_CONTAINER} `
     -dit --privileged --network host `
@@ -101,13 +78,6 @@ docker run --name ${DOCKER_CONTAINER} `
     --add-host "${DOCKER_PRV_NAME}:127.0.0.1" `
     -v /dev/bus/usb/:/dev/bus/usb `
     -v /etc/localtime:/etc/localtime:ro `
-    -v "${WORK_PATH}:/data" `
-    -v "${TOOL_PATH}/sectools:/pkg/sectools" `
-    -v "${TOOL_PATH}/prebuilts:/pkg/prebuilts" `
-    -v "${TOOL_PATH}/tools/sectools:/pkg/tools/sectools" `
-    -v "${TOOL_PATH}/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools" `
-    -v "${TOOL_PATH}/qct/software/arm:/pkg/qct/software/arm" `
-    -v "${TOOL_PATH}/qct/software/llvm:/pkg/qct/software/llvm" `
     "${DOCKER_IMG}:$__USERNAME" bash
 
 # Start and configure Docker container
@@ -120,6 +90,18 @@ docker exec -u root ${DOCKER_CONTAINER} cp /home/$__USERNAME/rclone/rclone /usr/
 docker exec -u root ${DOCKER_CONTAINER} chmod +x /usr/local/bin/rclone
 docker exec -u root ${DOCKER_CONTAINER} cp /home/$__USERNAME/rclone/rclone_fw_share.conf /home/$__USERNAME
 docker exec -u root ${DOCKER_CONTAINER} bash -c "cat /home/$__USERNAME/rclone/bash_aliases >> /home/$__USERNAME/.bash_aliases"
+docker exec -u root ${DOCKER_CONTAINER} mkdir /pkg/tmp
+docker cp ${TOOL_PATH} ${DOCKER_CONTAINER}:/pkg/tmp/cavli_sdx35_buildtools.7z
+docker exec -u root ${DOCKER_CONTAINER} bash -c "cd /pkg/tmp/ ; 7z x cavli_sdx35_buildtools.7z -mmt=256"
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/sectools /pkg/
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/prebuilts /pkg/
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/tools/sectools /pkg/tools/
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/qct/software/HEXAGON_Tools /pkg/qct/software/
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/qct/software/arm /pkg/qct/software/
+docker exec -u root ${DOCKER_CONTAINER} mv /pkg/tmp/qct/software/llvm /pkg/qct/software/
+docker exec -u root ${DOCKER_CONTAINER} rm -rf /pkg/tmp
+docker exec -u root ${DOCKER_CONTAINER} chown builder -R /pkg
+
 if (Test-Path "~/.ssh") {
     docker exec -u $__USERNAME ${DOCKER_CONTAINER} mkdir /home/$__USERNAME/.ssh -p
     docker cp ${home}/.ssh/config ${DOCKER_CONTAINER}:/home/$__USERNAME/.ssh/
