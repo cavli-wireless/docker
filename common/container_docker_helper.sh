@@ -45,7 +45,7 @@ done
 
 shift $(( $OPTIND - 1 ))
 
-__USERNAME=$(whoami)
+__USERNAME="builder"
 __UID=$(id -u $1)
 __GID=$(id -g $1)
 DOCKER_PRV_NAME=build_cqm220_jammy
