@@ -3,7 +3,7 @@ ${DockerPrvName} = "build_cqm220_sdk_jammy"
 ${DockerContainer} = "${DockerPrvName}_${Username}"
 ${DockerImg} = "ghcr.io/cavli-wireless-public/cqm220/jammy/owrt"
 ${DockerImgTag} = "builder"
-${DOCKER_PRV_NAME}=build_cqm220_jammy
+${DOCKER_PRV_NAME} = "build_cqm220_jammy"
 
 # Pull latest Docker images
 docker pull "${DockerImg}:${DockerImgTag}"
