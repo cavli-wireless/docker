@@ -1,6 +1,7 @@
 # Use the base image
-FROM ghcr.io/cavli-wireless/sdx35/jammy/owrt:{DOCKER_TAG}
+FROM ghcr.io/cavli-wireless-public/c10qm_9607/build_mdm9607_le:{DOCKER_TAG}
 
+USER root
 # Create a user group with GID 1000
 RUN groupadd -g {GID} {USERNAME}
 
