@@ -74,7 +74,7 @@ docker run --name $DOCKER_CONTAINER \
     --add-host ${DOCKER_PRV_NAME}:127.0.0.1 \
     -v /dev/bus/usb/:/dev/bus/usb \
     -v /etc/localtime:/etc/localtime:ro \
-    -v /mnt:/mnt \
+    -v $WORK_PATH:$WORK_PATH \
     -v $WORK_PATH:/data \
     -v $TOOL_PATH:/pkg \
     $CMD \
