@@ -6,6 +6,7 @@ USER root
 # Create a user group with GID 1000
 RUN groupadd -g 1004 khoado
 
+RUN userdel user
 # Create a user with UID 1000 and add to the group with GID 1000
 RUN useradd -u 1002 -g 1004 -m -s /bin/bash khoado
 RUN usermod -aG sudo khoado
