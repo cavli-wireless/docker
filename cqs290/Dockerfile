@@ -1,19 +1,21 @@
 # Use the base image
-FROM ghcr.io/cavli-wireless/cqs290/build_cqs290:latest
+#FROM ghcr.io/cavli-wireless/cqs290/build_cqs290:latest
+FROM ivando0209/build-os:latest
 
+USER root
 # Create a user group with GID 1000
-RUN groupadd -g 1000 khoa
+RUN groupadd -g 1004 khoado
 
 # Create a user with UID 1000 and add to the group with GID 1000
-RUN useradd -u 1000 -g 1000 -m -s /bin/bash khoa
-RUN usermod -aG sudo khoa
+RUN useradd -u 1002 -g 1004 -m -s /bin/bash khoado
+RUN usermod -aG sudo khoado
 
 # Grant the user sudo privileges (optional)
-RUN echo 'khoa ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+RUN echo 'khoado ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# Set the default user to khoa
-USER khoa
+# Set the default user to khoado
+USER khoado
 
-RUN source home/khoa/.bashrc
+#RUN source home/khoado/.bashrc
 # Set the command to run /data/run.sh
 CMD ["bash"]

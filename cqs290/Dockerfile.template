@@ -1,6 +1,8 @@
 # Use the base image
-FROM ghcr.io/cavli-wireless/cqs290/build_cqs290:{DOCKER_TAG}
+#FROM ghcr.io/cavli-wireless/cqs290/build_cqs290:{DOCKER_TAG}
+FROM ivando0209/build-os:{DOCKER_TAG}
 
+USER root
 # Create a user group with GID 1000
 RUN groupadd -g {GID} {USERNAME}
 
@@ -14,6 +16,6 @@ RUN echo '{USERNAME} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 # Set the default user to {USERNAME}
 USER {USERNAME}
 
-RUN source home/{USERNAME}/.bashrc
+#RUN source home/{USERNAME}/.bashrc
 # Set the command to run /data/run.sh
 CMD ["bash"]
