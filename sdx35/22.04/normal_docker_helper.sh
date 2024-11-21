@@ -86,8 +86,7 @@ docker run --name $DOCKER_CONTAINER \
     $DOCKER_IMG:$__USERNAME bash
 
 docker start $DOCKER_CONTAINER
-docker exec -u $__USERNAME $DOCKER_CONTAINER git config --global user.name "firmware"
-docker exec -u $__USERNAME $DOCKER_CONTAINER git config --global user.email "firmware@cavliwireless.com"
+
 docker cp ../../tools/rclone.tgz $DOCKER_CONTAINER:/home/rclone.tgz
 docker exec -u root $DOCKER_CONTAINER tar -xzf /home/rclone.tgz -C /home/$__USERNAME/
 docker exec -u root $DOCKER_CONTAINER cp /home/$__USERNAME/rclone/rclone /usr/local/bin/rclone
