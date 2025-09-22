@@ -10,7 +10,7 @@ print_usage()
     echo "  -w: working path to mount at /data/"
     echo "  -t: tool path to mount at /pkg/"
     echo "NOTE"
-    echo "  This container base on ghcr.io/cavli-wireless/sdx/jammy/owrt:latest"
+    echo "  This container base on ghcr.io/cavli-wireless-public/sdx/jammy/owrt:latest"
     echo "  Create user which refer from caller env ( result of whoami )"
     echo "  Mount and setup env to build"
     echo "  USER MUST PREPARE TOOLS BUILD"
@@ -34,11 +34,11 @@ __UID=$(id -u $1)
 __GID=$(id -g $1)
 DOCKER_PRV_NAME=build_sdx_jammy
 DOCKER_CONTAINER=${DOCKER_PRV_NAME}_${__USERNAME}
-DOCKER_IMG=ghcr.io/cavli-wireless/sdx/jammy/owrt
+DOCKER_IMG=ghcr.io/cavli-wireless-public/sdx/jammy/owrt
 DOCKER_IMG_TAG=latest
 
-# login to github ghcr.io/cavli-wireless
-# docker login ghcr.io/cavli-wireless
+# login to github ghcr.io/cavli-wireless-public
+# docker login ghcr.io/cavli-wireless-public
 # Pull latest docker images
 docker pull $DOCKER_IMG:$DOCKER_IMG_TAG
 docker stop $DOCKER_CONTAINER 2> /dev/null

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Step 1: Force delete the Docker image if it exists
-IMAGE_NAME="ghcr.io/cavli-wireless/sdx/jammy/owrt:latest"
+IMAGE_NAME="ghcr.io/cavli-wireless-public/sdx/jammy/owrt:latest"
 
 # Check if the image exists
 if docker images | grep -q "$IMAGE_NAME"; then
