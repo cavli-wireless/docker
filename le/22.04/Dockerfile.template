@@ -1,0 +1,18 @@
+# Use the base image
+FROM ghcr.io/cavli-wireless-public/jammy/le:{DOCKER_TAG}
+
+# Create a user group with GID 1000
+RUN groupadd -g {GID} {USERNAME}
+
+# Create a user with UID 1000 and add to the group with GID 1000
+RUN useradd -u {UID} -g {GID} -m -s /bin/bash {USERNAME}
+RUN usermod -aG sudo {USERNAME}
+
+# Grant the user sudo privileges (optional)
+RUN echo '{USERNAME} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Set the default user to {USERNAME}
+USER {USERNAME}
+
+# Set the command to run /data/run.sh
+CMD ["bash"]
