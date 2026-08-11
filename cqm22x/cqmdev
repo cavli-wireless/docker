@@ -1,0 +1,150 @@
+#!/bin/bash
+# cqmdev — day-to-day driver for the CQM22x build container.
+#
+# Thin wrapper over `docker exec`. Everything it does could be typed by hand;
+# it exists so that the container name, product selection and workspace path
+# are not retyped (and mistyped) a dozen times a day.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+PRODUCT="${CQM_PRODUCT:-cqm220-3}"
+CONTAINER_PREFIX="cqm22x-build"
+
+usage() {
+cat <<EOF
+cqmdev — CQM22x build container
+
+  cqmdev [-p PRODUCT] <command> [args]
+
+Commands:
+  sync                  repo init + sync the product source into /work
+  shell                 interactive shell in the container
+  build [build.sh args] run chipcode/build/build.sh inside the container
+  run <cmd...>          run an arbitrary command in the container
+  doctor                re-check the environment against the pinned contract
+  status                show container, image and bundle state
+  start | stop          start or stop the container
+  logs                  follow container output
+
+Options:
+  -p, --product NAME    cqm220-0 | cqm220-3   (default $PRODUCT)
+  -h, --help
+
+Examples:
+  cqmdev build -m nonhlos -t MBB-CAV -v debug
+  cqmdev -p cqm220-0 shell
+  cqmdev run git -C /work/cqm220-3 status
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p|--product) PRODUCT="$2"; shift 2;;
+        -h|--help)    usage; exit 0;;
+        *) break;;
+    esac
+done
+
+CONTAINER="$CONTAINER_PREFIX-$PRODUCT"
+[[ $# -gt 0 ]] || { usage; exit 1; }
+CMD="$1"; shift
+
+die() { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
+
+require_container() {
+    docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER" \
+        || die "container $CONTAINER does not exist. Run: ./cqm22x-setup.sh all --pkg-url <link> --product $PRODUCT"
+    if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+        printf '\e[36m==>\e[0m starting %s\n' "$CONTAINER"
+        docker start "$CONTAINER" >/dev/null
+    fi
+}
+
+# `docker exec` skips the image entrypoint, so it would run as root and leave
+# root-owned files in the bind-mounted workspace. Carry the caller's identity
+# on every exec instead.
+dexec() {
+    # -it only when there really is a terminal: passing it from a script, a
+    # cron job or a non-tty ssh session makes docker refuse outright with
+    # "cannot attach stdin to a TTY-enabled container".
+    local tty=()
+    [[ -t 0 && -t 1 ]] && tty=(-i -t)
+    docker exec "${tty[@]}" -u "$(id -u):$(id -g)" \
+        -e "HOME=/home/$(id -un)" -e "USER=$(id -un)" \
+        "$@"
+}
+
+case "$CMD" in
+sync)
+    require_container
+    # Manifest branch differs per product; the manifest file is shared.
+    case "$PRODUCT" in
+        cqm220-0) BRANCH=cavli_kuno_le_1_0;;
+        cqm220-3) BRANCH=cavli_sdx35_iot_le_1_0;;
+    esac
+    MANIFEST_URL="git@github.com:cavli-wireless/cqm22x-manifests.git"
+    MANIFEST_FILE=chipcode-cqm22x-cav-base.xml
+    JOBS="${CQM_SYNC_JOBS:-8}"
+
+    printf '\e[36m==>\e[0m syncing %s (%s, %s)\n' "$PRODUCT" "$BRANCH" "$MANIFEST_FILE"
+    dexec "$CONTAINER" bash -lc "
+        set -e
+        mkdir -p /work/$PRODUCT && cd /work/$PRODUCT
+        repo init -u '$MANIFEST_URL' -b '$BRANCH' -m '$MANIFEST_FILE'
+        repo sync -c -j$JOBS --no-clone-bundle --optimized-fetch
+        # repo's LFS smudge filter is disabled during sync, so the pointer
+        # files have to be resolved afterwards or the build fails on
+        # zero-byte binaries.
+        repo forall -c 'git lfs pull 2>/dev/null || true'
+    " || die "sync failed. If this is an SSH auth error, check that ~/.ssh is mounted and your key is loaded.
+Note GitHub port 22 is blocked on some networks — use ssh.github.com:443 in ~/.ssh/config."
+    printf '\e[32m==>\e[0m source ready at /work/%s\n' "$PRODUCT"
+    ;;
+
+shell)
+    require_container
+    dexec -w /work "$CONTAINER" bash -l
+    ;;
+
+build)
+    require_container
+    # build.sh must run from the chipcode directory of the selected product.
+    dexec -w "/work/$PRODUCT/chipcode" "$CONTAINER" \
+        bash -lc './build/build.sh "$@"' _ "$@"
+    ;;
+
+run)
+    [[ $# -gt 0 ]] || die "run needs a command"
+    require_container
+    dexec -w /work "$CONTAINER" "$@"
+    ;;
+
+doctor)
+    require_container
+    dexec "$CONTAINER" cqm-doctor
+    ;;
+
+status)
+    if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+        echo "container $CONTAINER: not created"
+        exit 0
+    fi
+    docker ps -a --filter "name=^${CONTAINER}$" \
+        --format 'container  {{.Names}}
+state      {{.Status}}
+image      {{.Image}}'
+    echo "bundle     $(docker exec "$CONTAINER" cat /pkg/BUNDLE_VERSION 2>/dev/null || echo 'not mounted')"
+    echo "image ver  $(docker exec "$CONTAINER" printenv CQM_IMAGE_VERSION 2>/dev/null || echo unknown)"
+    echo
+    echo "writable layer (should stay small — caches belong on bind mounts):"
+    docker ps -as --filter "name=^${CONTAINER}$" --format '  {{.Size}}'
+    ;;
+
+start) docker start "$CONTAINER" >/dev/null && echo "started $CONTAINER";;
+stop)  docker stop  "$CONTAINER" >/dev/null && echo "stopped $CONTAINER";;
+logs)  exec docker logs -f "$CONTAINER";;
+
+*) die "unknown command: $CMD (try --help)";;
+esac
