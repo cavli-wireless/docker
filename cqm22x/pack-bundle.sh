@@ -202,7 +202,14 @@ tar --use-compress-program="zstd -${ZSTD_LEVEL} -T0 --long=27" \
 log "checksumming archive"
 # Run from OUTDIR so the file records a bare filename: the consumer downloads
 # the archive under its own path and checks it there.
-( cd "$OUTDIR" && sha256sum "$(basename "$ARCHIVE")" ) > "$ARCHIVE.sha256"
+#
+# Write to a temporary name and rename into place. Hashing 14 GB takes a
+# minute, and a plain redirect creates the .sha256 empty for that whole
+# minute — long enough for anything watching the directory, or an upload
+# kicked off in parallel, to pick up a checksum file with nothing in it and
+# silently skip verification.
+( cd "$OUTDIR" && sha256sum "$(basename "$ARCHIVE")" ) > "$ARCHIVE.sha256.tmp"
+mv -f "$ARCHIVE.sha256.tmp" "$ARCHIVE.sha256"
 
 printf '\n  archive  %s\n  size     %s\n  sha256   %s\n\n' \
     "$ARCHIVE" "$(du -h "$ARCHIVE" | cut -f1)" "$(awk '{print $1}' "$ARCHIVE.sha256")"
