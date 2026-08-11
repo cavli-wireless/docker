@@ -43,6 +43,8 @@ container_docker_helper.sh [options]
   -r: root directory for the bundle and build caches
       (default $HOME/cqm22x)
   -p: product: cqm220-0 or cqm220-3          (default cqm220-3)
+  -V: toolchain bundle version               (default 1.0.1)
+      Several versions can live side by side under -r; this picks one.
   -k: keep the downloaded archive after unpacking
   -F: re-download even if the bundle is already installed
   -P: do not pull the image; use the local copy
@@ -74,7 +76,7 @@ DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
 DOCKER_IMG_TAG="${CQM_IMAGE_TAG:-latest}"
 LEGACY_IMAGES="sdx/jammy/owrt cqm220/jammy/owrt sdx35/jammy/owrt"
 
-BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.0.0}"
+BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.0.1}"
 CQM_ROOT="${CQM_ROOT:-$HOME/cqm22x}"
 WORK_PATH=""
 PKG_URL=""
@@ -91,7 +93,7 @@ RECREATE=no
 FETCH_ONLY=no
 DRYRUNCMD=""
 
-while getopts "hdw:u:c:t:f:r:p:kFPDURn" flag; do
+while getopts "hdw:u:c:t:f:r:p:V:kFPDURn" flag; do
   case $flag in
     d) DRYRUNCMD="echo";;
     w) WORK_PATH=$OPTARG;;
@@ -101,6 +103,7 @@ while getopts "hdw:u:c:t:f:r:p:kFPDURn" flag; do
     f) FILE_TOOL_PATH=$OPTARG;;
     r) CQM_ROOT=$OPTARG;;
     p) PRODUCT=$OPTARG;;
+    V) BUNDLE_VERSION=$OPTARG;;
     k) KEEP_ARCHIVE=yes;;
     F) FORCE_FETCH=yes;;
     P) SKIP_PULL=yes;;
