@@ -30,7 +30,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: cavli-wireless-public/cqm22x/jammy/owrt
+  IMAGE_NAME: cavli-wireless-public/cqm22x-buildenv
   CONTEXT: cqm22x
 
 jobs:

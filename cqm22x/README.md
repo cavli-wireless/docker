@@ -38,7 +38,7 @@ Two pieces, deliberately kept apart:
 
 | | Contents | Size | Distribution |
 |---|---|---|---|
-| **Base image** | Ubuntu 22.04, Python 3.6/3.8/3.10, gcc-10, repo, dtc, rclone | ~2.4 GB | `ghcr.io/cavli-wireless-public/cqm22x/jammy/owrt`, public |
+| **Base image** | Ubuntu 22.04, Python 3.6/3.8/3.10, gcc-10, repo, dtc, rclone | ~2.4 GB | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
 | **Toolchain bundle** | `/pkg` — HEXAGON, LLVM, linaro, sectools, prebuilts | ~12 GB packed, ~48 GB unpacked | supplied by Cavli, mounted read-only |
 
 The bundle is kept out of the image for two reasons: this image is published
