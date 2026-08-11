@@ -10,7 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 PRODUCT="${CQM_PRODUCT:-cqm220-3}"
-CONTAINER_PREFIX="cqm22x-build"
+# Must match the naming in container_docker_helper.sh exactly.
+DOCKER_PRV_NAME="build_cqm22x_jammy"
 
 usage() {
 cat <<EOF
@@ -47,15 +48,23 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-CONTAINER="$CONTAINER_PREFIX-$PRODUCT"
+die() { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
+
+# cqm220-3 is the default product and gets the plain name, so the container is
+# the one the setup output tells you to `docker start -i`.
+case "$PRODUCT" in
+    cqm220-3) CONTAINER="${DOCKER_PRV_NAME}_$(id -un)";;
+    cqm220-0) CONTAINER="${DOCKER_PRV_NAME}_$(id -un)_${PRODUCT}";;
+    *) die "unknown product: $PRODUCT (expected cqm220-0 or cqm220-3)";;
+esac
+
 [[ $# -gt 0 ]] || { usage; exit 1; }
 CMD="$1"; shift
 
-die() { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
-
 require_container() {
     docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER" \
-        || die "container $CONTAINER does not exist. Run: ./cqm22x-setup.sh all --pkg-url <link> --product $PRODUCT"
+        || die "container $CONTAINER does not exist.
+Run: bash container_docker_helper.sh -w <work path> -u <bundle link> -p $PRODUCT"
     if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
         printf '\e[36m==>\e[0m starting %s\n' "$CONTAINER"
         docker start "$CONTAINER" >/dev/null
