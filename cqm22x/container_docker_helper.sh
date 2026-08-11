@@ -231,41 +231,82 @@ gdrive_file_id() {
     esac
 }
 
+# Abort a transfer that has effectively stopped. Drive routinely leaves a
+# multi-GB download connected but idle; curl's --retry never fires for that,
+# because nothing has failed — the socket simply goes quiet forever. These two
+# turn a silent hang into a timeout that the retry loop can act on.
+CURL_STALL_OPTS=(--connect-timeout 30 --speed-limit 30000 --speed-time 60)
+
 # Google Drive will not hand over a large file on the first request: it answers
 # with an HTML page carrying a confirmation token that has to be posted back.
 # Reproducing that exchange here means the target machine needs nothing beyond
 # curl — no gdown, no rclone, no Google account.
+#
+# The token is short-lived, so each retry re-resolves it rather than reusing a
+# stale one, and resumes the partial file with -C -.
 fetch_gdrive() {
-    local id="$1" dest="$2" cookie page confirm uuid
+    local id="$1" dest="$2" cookie page confirm uuid url
+    local attempt=0 max=8 before after rc
     cookie="$(mktemp)"; page="$(mktemp)"
     # shellcheck disable=SC2064
     trap "rm -f '$cookie' '$page'" RETURN
 
-    log "resolving Google Drive file $id"
-    curl -sL -c "$cookie" -o "$page" "https://drive.google.com/uc?export=download&id=${id}"
+    while :; do
+        attempt=$((attempt + 1))
+        before="$(stat -c %s "$dest" 2>/dev/null || echo 0)"
 
-    if head -c 512 "$page" | grep -qiE '<!doctype html|<html'; then
-        if grep -qiE 'quota|too many users|cannot currently be viewed' "$page"; then
-            die "Google Drive is refusing this file right now (download quota exceeded).
+        log "resolving Google Drive file $id${before:+ }$( [ "$before" -gt 0 ] && printf '(resuming from %s)' "$(numfmt --to=iec "$before" 2>/dev/null || echo "$before bytes")" )"
+        : > "$page"
+        curl -sL "${CURL_STALL_OPTS[@]}" -c "$cookie" -o "$page" \
+            "https://drive.google.com/uc?export=download&id=${id}" || true
+
+        if head -c 512 "$page" | grep -qiE '<!doctype html|<html'; then
+            if grep -qiE 'quota|too many users|cannot currently be viewed' "$page"; then
+                die "Google Drive is refusing this file right now (download quota exceeded).
 Try again later, or ask Cavli for a direct HTTPS mirror and pass that to -u."
+            fi
+            confirm="$(grep -oE 'name="confirm" value="[^"]*"' "$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
+            uuid="$(grep -oE 'name="uuid" value="[^"]*"' "$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
+            url="https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=${confirm:-t}&uuid=${uuid}"
+            [ "$attempt" -eq 1 ] && log "downloading (large-file confirmation accepted)"
+        else
+            url="https://drive.google.com/uc?export=download&id=${id}"
+            [ "$attempt" -eq 1 ] && log "downloading"
         fi
-        confirm="$(grep -oE 'name="confirm" value="[^"]*"' "$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-        uuid="$(grep -oE 'name="uuid" value="[^"]*"' "$page" | head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
-        log "downloading (large-file confirmation accepted)"
-        curl -L -b "$cookie" -C - --retry 5 --retry-delay 5 --progress-bar -o "$dest" \
-            "https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=${confirm:-t}&uuid=${uuid}"
-    else
-        log "downloading"
-        curl -L -b "$cookie" -C - --retry 5 --progress-bar -o "$dest" \
-            "https://drive.google.com/uc?export=download&id=${id}"
-    fi
+
+        rc=0
+        curl -L -b "$cookie" -C - "${CURL_STALL_OPTS[@]}" \
+             --retry 3 --retry-delay 5 --progress-bar -o "$dest" "$url" || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+
+        # 33 = server will not resume, 416 surfaces as 22/36 depending on
+        # version. If the file is already complete these are expected; the
+        # checksum check that follows is the real verdict, so stop retrying.
+        case "$rc" in 33|36) log "server declined to resume — treating the file as complete"; return 0;; esac
+
+        after="$(stat -c %s "$dest" 2>/dev/null || echo 0)"
+        [ "$attempt" -lt "$max" ] || die "download failed after $max attempts (curl exit $rc).
+Got $(numfmt --to=iec "$after" 2>/dev/null || echo "$after bytes") so far; the partial file is kept, so
+re-running resumes from there. If Drive keeps stalling, ask Cavli for an HTTPS mirror."
+
+        if [ "$after" -le "$before" ]; then
+            warn "attempt $attempt made no progress (curl exit $rc) — retrying in 10s"
+        else
+            log "attempt $attempt stopped at $(numfmt --to=iec "$after" 2>/dev/null || echo "$after") — resuming"
+        fi
+        sleep 10
+    done
 }
 
 fetch_any() {
     local url="$1" dest="$2" id
     id="$(gdrive_file_id "$url")"
-    if [ -n "$id" ]; then fetch_gdrive "$id" "$dest"
-    else log "downloading $url"; curl -fL --retry 5 --retry-delay 5 -C - --progress-bar -o "$dest" "$url"
+    if [ -n "$id" ]; then
+        fetch_gdrive "$id" "$dest"
+    else
+        log "downloading $url"
+        curl -fL -C - "${CURL_STALL_OPTS[@]}" --retry 10 --retry-delay 10 \
+             --progress-bar -o "$dest" "$url"
     fi
 }
 
