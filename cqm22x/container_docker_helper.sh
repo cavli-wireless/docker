@@ -381,6 +381,20 @@ finalise_bundle() {
 }
 
 acquire_bundle() {
+    if [ -n "$DRYRUNCMD" ]; then
+        if [ -n "$TOOL_PATH" ]; then
+            echo "+ use the unpacked bundle at $TOOL_PATH"
+        elif [ -f "$BUNDLE_DIR/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
+            echo "+ bundle $BUNDLE_VERSION already installed at $BUNDLE_DIR — no download"
+        elif [ -n "$FILE_TOOL_PATH" ]; then
+            echo "+ verify and unpack $FILE_TOOL_PATH -> $BUNDLE_DIR"
+        else
+            echo "+ download ${PKG_URL:-<no -u given>} -> $BUNDLE_ROOT/cqm22x-pkg-${BUNDLE_VERSION}.tar.zst"
+            echo "+ verify sha256, then unpack -> $BUNDLE_DIR"
+        fi
+        return 0
+    fi
+
     # -t points at a bundle the caller already unpacked; use it in place.
     if [ -n "$TOOL_PATH" ]; then
         [ -d "$TOOL_PATH/qct/software" ] \
@@ -546,8 +560,34 @@ verify_container() {
 }
 
 # ===========================================================================
+# Say where everything is going before spending an hour putting it there.
+# -w and -r are independent, and it is not obvious: -w only sets where the
+# source lives. Without -r the toolchain lands in $HOME, which on many machines
+# is a small root partition.
+print_plan() {
+    local tc_fs tc_free probe
+    # df fails on a path that does not exist yet, so ask about the nearest
+    # ancestor that does.
+    probe="$BUNDLE_ROOT"
+    while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="$(dirname "$probe")"; done
+    tc_fs="$(df -h --output=target "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+    tc_free="$(df -h --output=avail "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+    cat <<EOF
+${C_INFO}==>${C_OFF} Plan
+
+  toolchain   $BUNDLE_DIR
+              on $tc_fs, $tc_free free — needs ~60 GB (change with -r)
+  caches      $CACHE_ROOT/$PRODUCT
+  source      $WORK_PATH  ->  /work
+  image       $IMAGE
+  container   $DOCKER_CONTAINER
+
+EOF
+}
+
 main() {
     assert_no_legacy_collision
+    print_plan
 
     if [ "$FETCH_ONLY" = yes ]; then
         acquire_bundle
