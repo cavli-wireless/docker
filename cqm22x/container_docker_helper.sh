@@ -61,7 +61,7 @@ EXAMPLES
   bash container_docker_helper.sh -u '<drive link>' -c <sha256> -n
 
 NOTE
-  This container is based on ghcr.io/cavli-wireless-public/cqm22x/jammy/owrt
+  This container is based on ghcr.io/cavli-wireless-public/cqm22x-buildenv
   The container user is created from the caller's own uid/gid, so files
   written into the mounted work path stay owned by you.
   Roughly 60 GB of free space is needed for the bundle.
@@ -70,7 +70,7 @@ EOF
 
 # ---- defaults --------------------------------------------------------------
 DOCKER_PRV_NAME=build_cqm22x_jammy
-DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x/jammy/owrt}"
+DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
 DOCKER_IMG_TAG="${CQM_IMAGE_TAG:-latest}"
 LEGACY_IMAGES="sdx/jammy/owrt cqm220/jammy/owrt sdx35/jammy/owrt"
 
@@ -153,6 +153,11 @@ assert_no_legacy_collision() {
         [[ "$DOCKER_IMG" != *"$legacy" ]] \
             || die "refusing to use $legacy — other projects depend on that image"
     done
+    # Every pre-existing environment in this repository publishes under a
+    # */jammy/owrt name. Staying out of that family entirely means a typo in
+    # CQM_IMAGE_REPO can never overwrite one of them.
+    [[ "$DOCKER_IMG" != */jammy/owrt ]] \
+        || die "refusing to publish under the */jammy/owrt naming family used by the other environments"
     [[ "$DOCKER_CONTAINER" == "${DOCKER_PRV_NAME}_"* ]] \
         || die "container name '$DOCKER_CONTAINER' is outside the ${DOCKER_PRV_NAME}_* namespace"
 }
