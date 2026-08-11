@@ -515,6 +515,10 @@ create_container() {
         -v "$WORK_PATH:/work"
         -v /etc/localtime:/etc/localtime:ro
     )
+    # OpenWrt's own prebuilt tool/toolchain cache. set_openwrt_env.sh finds it
+    # here by default and restores it automatically on the first app build,
+    # instead of compiling gcc/binutils/musl from scratch.
+    [ -d "$BUNDLE_DIR/openwrt-prebuilt-backup" ]         && args+=( -v "$BUNDLE_DIR/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro" )
     [ -f "$BUNDLE_DIR/BUNDLE_VERSION" ]  && args+=( -v "$BUNDLE_DIR/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
     [ -r "$BUNDLE_DIR/SHA256SUMS.spot" ] && args+=( -v "$BUNDLE_DIR/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
     [ -d "$HOME/.ssh" ]                  && args+=( -v "$HOME/.ssh:/home/$__USERNAME/.ssh:ro" )
