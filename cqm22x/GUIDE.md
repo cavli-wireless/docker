@@ -98,6 +98,7 @@ bash container_docker_helper.sh -u '<link>' -c '<sha256>' -n
 | `-u URL` | bundle link (Google Drive or plain HTTPS) |
 | `-c HEX` | expected sha256 of the bundle |
 | `-p NAME` | `cqm220-3` (default) or `cqm220-0` |
+| `-V VER` | which toolchain bundle version to use (default `1.0.1`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
 | `-R` | rebuild the container from scratch |
 | `-d` | dry run: print what would happen, change nothing |
@@ -154,8 +155,15 @@ it would take. Worth doing on any new machine.
 <-w>/                            your source, mounted at /work
 ```
 
-Several toolchain versions can live side by side; switch with
-`CQM_BUNDLE_VERSION` without downloading anything again.
+Several toolchain versions can live side by side under `toolchain/`; `-V`
+picks which one the container mounts, without downloading anything again.
+
+| Bundle | Contents |
+|---|---|
+| `1.0.0` | Qualcomm toolchain only — enough for modem, boot and tz |
+| `1.0.1` | adds OpenWrt's prebuilt tool/toolchain cache, so the first app build restores instead of compiling gcc/binutils/musl from source |
+
+Use `1.0.1` unless you have a reason not to.
 
 Nothing of value lives inside the container — the writable layer stays around
 200 kB. Deleting and recreating it costs seconds and loses nothing.
