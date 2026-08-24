@@ -43,15 +43,34 @@ check() { # check <label> <expected> <actual>
 pyver() { "$1" -c 'import platform;print(platform.python_version())' 2>/dev/null || echo missing; }
 
 # `docker exec` does not run the entrypoint, so the environment it exports is
-# not available here. Read the bundle version from the mount instead.
+# not available here. Read the bundle versions from the mounts instead.
 if [[ -z "${CQM_BUNDLE_VERSION:-}" && -r /pkg/BUNDLE_VERSION ]]; then
     CQM_BUNDLE_VERSION="$(cat /pkg/BUNDLE_VERSION)"
 fi
+YOCTO_VERSION="$( [[ -r /pkg/YOCTO_VERSION ]] && cat /pkg/YOCTO_VERSION || echo "not mounted" )"
+OPENWRT_VERSION="$( [[ -r /pkg/OPENWRT_VERSION ]] && cat /pkg/OPENWRT_VERSION || echo "not mounted" )"
+
+# Which userspace this product builds decides which bundles have to be present.
+# The container carries CQM_PRODUCT from `docker run -e`, which `docker exec`
+# inherits; when it is absent, fall back to whatever is actually mounted so a
+# hand-started container still gets checked rather than silently skipped.
+PRODUCT="${CQM_PRODUCT:-}"
+if [[ -z "$PRODUCT" ]]; then
+    if [[ -d /pkg/yocto/llvm-arm-toolchain-ship ]]; then PRODUCT=cqm211
+    else PRODUCT=cqm220-3; fi
+fi
+case "$PRODUCT" in
+    cqm211) WANT_YOCTO=yes; WANT_OPENWRT=no;;
+    *)      WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+esac
 
 echo
 echo "cqm22x build environment check"
 echo "  image     ${CQM_IMAGE_VERSION:-dev} (${CQM_IMAGE_REVISION:-unknown})"
-echo "  bundle    ${CQM_BUNDLE_VERSION:-none}"
+echo "  product   $PRODUCT"
+echo "  qcom      ${CQM_BUNDLE_VERSION:-none}"
+[[ "$WANT_YOCTO"   == yes ]] && echo "  yocto     $YOCTO_VERSION"
+[[ "$WANT_OPENWRT" == yes ]] && echo "  openwrt   $OPENWRT_VERSION"
 echo
 
 # ---- 1. interpreters -------------------------------------------------------
@@ -114,9 +133,9 @@ else
     bad "dtc" "$dtc_bin executable" "missing"
 fi
 
-# ---- 4. proprietary bundle -------------------------------------------------
+# ---- 4. qcom bundle — needed by every product ------------------------------
 echo
-echo "toolchain bundle (/pkg)"
+echo "qcom bundle (/pkg)"
 for p in /pkg/qct/software/HEXAGON_Tools /pkg/qct/software/llvm/release/arm \
          /pkg/qct/software/arm/linaro-toolchain /pkg/sectools/v2/latest/Linux \
          /pkg/prebuilts/clang; do
@@ -156,14 +175,52 @@ else
     note "bundle mount" "writable: ${rw_mounts[*]} — a build could mutate the shared toolchain"
 fi
 
-# ---- 5. writable caches and workspace -------------------------------------
+# ---- 5. the product's own bundle ------------------------------------------
+# Only one of these is mounted, and which one is the whole reason the toolchain
+# is split into three archives. Checking for the wrong one would fail every
+# container that is correctly set up for the other product line.
+if [[ "$WANT_OPENWRT" == yes ]]; then
+    echo
+    echo "openwrt bundle (cqm220-0/3)"
+    if [[ -d /pkg/openwrt-prebuilt-backup ]]; then
+        # Without this the first app build compiles gcc/binutils/musl from
+        # source — hours instead of an extract. It is not fatal, so it warns.
+        n="$(ls -1 /pkg/openwrt-prebuilt-backup/*.tar.zst 2>/dev/null | wc -l)"
+        if (( n > 0 )); then ok "prebuilt cache" "$n archive(s)"
+        else note "prebuilt cache" "/pkg/openwrt-prebuilt-backup holds no .tar.zst"; fi
+    else
+        note "prebuilt cache" "not mounted — the first app build will compile tool/toolchain from scratch"
+    fi
+fi
+
+if [[ "$WANT_YOCTO" == yes ]]; then
+    echo
+    echo "yocto bundle (cqm211)"
+    if [[ -d /pkg/yocto/llvm-arm-toolchain-ship ]]; then
+        ok "llvm-arm-toolchain-ship" "$(ls /pkg/yocto/llvm-arm-toolchain-ship | tr '\n' ' ')"
+    else
+        bad "llvm-arm-toolchain-ship" "present" "missing"
+    fi
+    # A prefilled DL_DIR is the point of this bundle; an empty one means every
+    # recipe fetches from the network instead.
+    n="$(ls -1 /pkg/yocto/downloads 2>/dev/null | wc -l)"
+    if (( n > 100 )); then ok "download cache" "$n entries"
+    else note "download cache" "only $n entries — bitbake will fetch from the network"; fi
+fi
+
+# ---- 6. writable caches and workspace -------------------------------------
 echo
 echo "caches"
-for p in /pkg/openwrt /pkg/yocto/downloads /ccache /work; do
+cache_paths=(/ccache /work)
+[[ "$WANT_OPENWRT" == yes ]] && cache_paths+=(/pkg/openwrt)
+# bitbake writes into DL_DIR whenever a recipe needs something the bundle did
+# not carry, so this one has to be writable even though it ships prefilled.
+[[ "$WANT_YOCTO" == yes ]] && cache_paths+=(/pkg/yocto/downloads)
+for p in "${cache_paths[@]}"; do
     if [[ -w "$p" ]]; then ok "writable" "$p"; else bad "writable" "$p" "not writable"; fi
 done
 
-# ---- 6. identity -----------------------------------------------------------
+# ---- 7. identity -----------------------------------------------------------
 echo
 echo "identity"
 # Running as root means files written into the bind-mounted workspace come out
