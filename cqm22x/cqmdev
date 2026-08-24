@@ -30,7 +30,9 @@ Commands:
   logs                  follow container output
 
 Options:
-  -p, --product NAME    cqm220-0 | cqm220-3   (default $PRODUCT)
+  -p, --product NAME    cqm220-0 | cqm220-3 | cqm211   (default $PRODUCT)
+                        cqm220-* build an OpenWrt userspace (sdx35/32),
+                        cqm211 a Yocto one (sdx61/62/65)
   -h, --help
 
 Examples:
@@ -53,9 +55,9 @@ die() { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
 # cqm220-3 is the default product and gets the plain name, so the container is
 # the one the setup output tells you to `docker start -i`.
 case "$PRODUCT" in
-    cqm220-3) CONTAINER="${DOCKER_PRV_NAME}_$(id -un)";;
-    cqm220-0) CONTAINER="${DOCKER_PRV_NAME}_$(id -un)_${PRODUCT}";;
-    *) die "unknown product: $PRODUCT (expected cqm220-0 or cqm220-3)";;
+    cqm220-3)          CONTAINER="${DOCKER_PRV_NAME}_$(id -un)";;
+    cqm220-0|cqm211)   CONTAINER="${DOCKER_PRV_NAME}_$(id -un)_${PRODUCT}";;
+    *) die "unknown product: $PRODUCT (expected cqm220-0, cqm220-3 or cqm211)";;
 esac
 
 [[ $# -gt 0 ]] || { usage; exit 1; }

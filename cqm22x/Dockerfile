@@ -179,9 +179,16 @@ RUN ln -sf /usr/bin/bash /usr/bin/sh && ln -sf /usr/bin/make /usr/bin/gmake
 #    /pkg/kernel/prebuilts used to be a full 12 GB byte-for-byte copy of
 #    /pkg/prebuilts sitting in the container's writable layer. It is a symlink
 #    now — same content, 12 GB less disk, and it can never drift out of sync.
+#
+#    The openwrt-prebuilt-backup and yocto/* directories exist so that the
+#    runtime mounts land on a path the image already owns. Which of them is
+#    mounted depends on the product: cqm220-0/3 get the OpenWrt prebuilt cache,
+#    cqm211 gets the Yocto one. Both stay empty in the image itself.
 # ---------------------------------------------------------------------------
 RUN mkdir -p /pkg/qct/software /pkg/sectools /pkg/prebuilts /pkg/kernel \
-             /pkg/openwrt /pkg/yocto/downloads /work /ccache \
+             /pkg/openwrt /pkg/openwrt-prebuilt-backup \
+             /pkg/yocto/downloads /pkg/yocto/llvm-arm-toolchain-ship \
+             /work /ccache \
     && ln -sfn /pkg/prebuilts /pkg/kernel/prebuilts \
     && chmod 0777 /pkg/openwrt /pkg/yocto/downloads /work /ccache
 
