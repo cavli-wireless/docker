@@ -6,10 +6,23 @@
 #   bash container_docker_helper.sh -w /mnt/ -u '<google drive link to the pkg bundle>'
 #   docker start -i build_cqm22x_jammy_$(whoami)
 #
-# The container image itself is public and carries no licensed material. The
-# Qualcomm toolchain lives in a separate ~12 GB bundle that Cavli supplies a
-# link to; this script downloads it, verifies it, unpacks it once and mounts it
-# read-only. A bundle already on disk is not downloaded again.
+# The container image itself is public and carries no licensed material. What
+# it needs at runtime comes in three separate bundles, downloaded only when the
+# selected products actually need them:
+#
+#   qcom     Qualcomm toolchain, ~13 GB packed. EVERY product needs it.
+#            Proprietary — Cavli hands out the link per recipient, and it is
+#            never committed here. Supply it with -u (and -c for its sha256).
+#   yocto    Yocto download cache + LLVM/ARM toolchain, ~26 GB. cqm211 only.
+#   openwrt  OpenWrt prebuilt host tools and cross toolchain, ~2.3 GB.
+#            cqm220-0 and cqm220-3 only.
+#
+# yocto and openwrt carry nothing proprietary, so their links are built into
+# this script and nobody has to be told them. That is the whole point of the
+# split: a cqm220 developer never downloads the 26 GB yocto cache, and a cqm211
+# developer never downloads the OpenWrt one.
+#
+# Bundles already on disk are not downloaded again.
 #
 # ---------------------------------------------------------------------------
 # This never touches the older build environments in this repository
@@ -24,9 +37,10 @@ print_usage()
     cat <<'EOF'
 container_docker_helper.sh [options]
 
-  Sets up the CQM22x build container: installs Docker if it is missing,
-  fetches and verifies the Qualcomm toolchain bundle, creates the container
-  and checks that the environment matches the one CI builds with.
+  Sets up the CQM22x build containers: installs Docker if it is missing,
+  fetches and verifies the bundles the selected products need, creates one
+  container per product and checks that each matches the environment CI
+  builds with.
 
   Safe to re-run. Anything already in place is left alone.
 
@@ -34,39 +48,65 @@ container_docker_helper.sh [options]
   -h: print help
   -d: dry run: print what will be done
   -w: working path for sources, mounted at /work
-  -u: URL of the toolchain bundle — a Google Drive share link or any
-      direct HTTPS URL. Cavli supplies this.
-  -c: expected sha256 of the bundle (strongly recommended; Cavli
+  -p: product list, comma separated, or 'all'  (default cqm220-3)
+        cqm220-3   sdx35, OpenWrt userspace
+        cqm220-0   sdx32, OpenWrt userspace
+        cqm211     sdx61/62/65, Yocto userspace
+  -u: URL of the QCOM bundle — a Google Drive share link or any direct
+      HTTPS URL. Cavli supplies this; it is the only bundle this script
+      cannot fetch on its own.
+  -c: expected sha256 of the qcom bundle (strongly recommended; Cavli
       publishes it alongside the link)
-  -t: path to an already-extracted bundle; skips the download
-  -f: path to an already-downloaded .tar.zst; skips the download
-  -r: root directory for the bundle and build caches
+  -t: path to an already-extracted qcom bundle; skips its download
+  -f: path to an already-downloaded qcom .tar.zst; skips its download
+  -r: root directory for the bundles and build caches
       (default $HOME/cqm22x)
-  -p: product: cqm220-0 or cqm220-3          (default cqm220-3)
-  -V: toolchain bundle version               (default 1.0.1)
+  -V: bundle version                         (default 1.1.0)
       Several versions can live side by side under -r; this picks one.
-  -k: keep the downloaded archive after unpacking
-  -F: re-download even if the bundle is already installed
+  -k: keep downloaded archives after unpacking
+  -F: re-download even if a bundle is already installed
   -P: do not pull the image; use the local copy
   -D: do not install Docker; fail if it is missing
   -U: do not pass USB through (build only, no flashing)
-  -R: replace an existing container
+  -R: replace existing containers
+  -n: fetch and unpack the bundles only; do not create containers
+
+BUNDLES
+
+  Three archives, downloaded only when a selected product needs them:
+
+    qcom      ~13 GB packed, ~60 GB unpacked.  every product
+              Qualcomm proprietary — supplied by Cavli, pass with -u/-c.
+    openwrt   ~2.3 GB packed.                  cqm220-0, cqm220-3
+    yocto     ~24 GB packed, ~27 GB unpacked.  cqm211
+              Both public; their links are built into this script.
+
+  So a cqm220 machine downloads ~15 GB, a cqm211 machine ~37 GB, and a
+  machine set up for everything downloads each archive exactly once.
 
 EXAMPLES
-  # a fresh machine
-  bash container_docker_helper.sh -w /mnt/ -u '<drive link>' -c <sha256>
+  # sdx35 only — the default
+  bash container_docker_helper.sh -w /mnt/ -u '<qcom link>' -c <sha256>
 
-  # the bundle file is already here
-  bash container_docker_helper.sh -w /mnt/ -f ~/cqm22x-pkg-1.0.0.tar.zst
+  # sdx61/62/65
+  bash container_docker_helper.sh -w /mnt/ -p cqm211 -u '<qcom link>' -c <sha256>
 
-  # only fetch and unpack the bundle, do not build a container
-  bash container_docker_helper.sh -u '<drive link>' -c <sha256> -n
+  # both, sharing the qcom bundle
+  bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c <sha256>
+
+  # everything
+  bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c <sha256>
+
+  # the qcom archive is already here
+  bash container_docker_helper.sh -w /mnt/ -f ~/cqm22x-qcom-1.1.0.tar.zst
+
+  # only fetch and unpack, do not create containers
+  bash container_docker_helper.sh -p all -u '<link>' -c <sha256> -n
 
 NOTE
   This container is based on ghcr.io/cavli-wireless-public/cqm22x-buildenv
   The container user is created from the caller's own uid/gid, so files
   written into the mounted work path stay owned by you.
-  Roughly 60 GB of free space is needed for the bundle.
 EOF
 }
 
@@ -76,14 +116,53 @@ DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
 DOCKER_IMG_TAG="${CQM_IMAGE_TAG:-latest}"
 LEGACY_IMAGES="sdx/jammy/owrt cqm220/jammy/owrt sdx35/jammy/owrt"
 
-BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.0.1}"
+BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
 CQM_ROOT="${CQM_ROOT:-$HOME/cqm22x}"
 WORK_PATH=""
 PKG_URL=""
 PKG_SHA256=""
 TOOL_PATH=""
 FILE_TOOL_PATH=""
-PRODUCT=cqm220-3
+PRODUCTS_ARG=cqm220-3
+
+# ---------------------------------------------------------------------------
+# Which bundle each product needs.
+#
+#   cqm220-0 / cqm220-3   sdx35 / sdx32   OpenWrt userspace  -> qcom + openwrt
+#   cqm211                sdx61/62/65     Yocto userspace    -> qcom + yocto
+#
+# Everything needs qcom; the second component is what differs, and it is the
+# reason the toolchain is not one archive any more.
+# ---------------------------------------------------------------------------
+ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211"
+components_for() {
+    case "$1" in
+        cqm220-0|cqm220-3) echo "qcom openwrt";;
+        cqm211)            echo "qcom yocto";;
+        *) die "unknown product: $1 (expected one of: $ALL_PRODUCTS)";;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Where the public bundles live.
+#
+# These two carry no Qualcomm material — yocto/downloads is public source
+# tarballs, llvm-arm-toolchain-ship is an LLVM build, and openwrt-prebuilt-
+# backup is OpenWrt's own host tools — so their links belong here, where a
+# recipient needs to be told nothing at all.
+#
+# The qcom link is deliberately absent and must stay absent: this repository is
+# public and that bundle is Qualcomm proprietary. It is passed in with -u.
+#
+# Override any of them with CQM_QCOM_URL / CQM_YOCTO_URL / CQM_OPENWRT_URL (and
+# the matching _SHA256) when serving from a local mirror.
+# ---------------------------------------------------------------------------
+URL_qcom="${CQM_QCOM_URL:-}"
+SHA_qcom="${CQM_QCOM_SHA256:-}"
+URL_yocto="${CQM_YOCTO_URL:-https://drive.google.com/file/d/1V5Mnrdh4dxf4-ribimCH6rktMU0CGOlx/view?usp=sharing}"
+SHA_yocto="${CQM_YOCTO_SHA256:-d32d303ebc47a1ce9fb6fb9a2494b3c9c16741d95502e28eb6b1132600ed7c06}"
+URL_openwrt="${CQM_OPENWRT_URL:-https://drive.google.com/file/d/1sPOzmaDvJBZ4rASOLVJphqs6u0FmY8MZ/view?usp=sharing}"
+SHA_openwrt="${CQM_OPENWRT_SHA256:-cdf8f8e3ece1619a32e8ae948f0aee2f5eecf0467b65d5590026c5d235384405}"
 KEEP_ARCHIVE=no
 FORCE_FETCH=no
 SKIP_PULL=no
@@ -102,7 +181,7 @@ while getopts "hdw:u:c:t:f:r:p:V:kFPDURn" flag; do
     t) TOOL_PATH=$OPTARG;;
     f) FILE_TOOL_PATH=$OPTARG;;
     r) CQM_ROOT=$OPTARG;;
-    p) PRODUCT=$OPTARG;;
+    p) PRODUCTS_ARG=$OPTARG;;
     V) BUNDLE_VERSION=$OPTARG;;
     k) KEEP_ARCHIVE=yes;;
     F) FORCE_FETCH=yes;;
@@ -129,23 +208,63 @@ __USERNAME=$(id -un)
 __UID=$(id -u)
 __GID=$(id -g)
 
-case "$PRODUCT" in
-    cqm220-3) DOCKER_CONTAINER="${DOCKER_PRV_NAME}_${__USERNAME}";;
-    cqm220-0) DOCKER_CONTAINER="${DOCKER_PRV_NAME}_${__USERNAME}_${PRODUCT}";;
-    *) die "unknown product: $PRODUCT (expected cqm220-0 or cqm220-3)";;
-esac
+# -p takes a list: "cqm220-3", "cqm220-3,cqm211", or "all". One container is
+# created per product; they share whatever bundles they have in common, so
+# asking for two products does not download qcom twice.
+if [ "$PRODUCTS_ARG" = all ]; then
+    PRODUCTS="$ALL_PRODUCTS"
+else
+    PRODUCTS="$(printf '%s' "$PRODUCTS_ARG" | tr ',' ' ')"
+fi
+for _p in $PRODUCTS; do components_for "$_p" >/dev/null; done
 
-BUNDLE_ROOT="$CQM_ROOT/toolchain"
+# cqm220-3 is the default product and gets the plain container name, so it is
+# the one the setup output tells you to `docker start -i`.
+container_for() {
+    case "$1" in
+        cqm220-3) echo "${DOCKER_PRV_NAME}_${__USERNAME}";;
+        *)        echo "${DOCKER_PRV_NAME}_${__USERNAME}_$1";;
+    esac
+}
+
+# The union of what every selected product needs, in a stable order.
+NEEDED_COMPONENTS=""
+for _p in $PRODUCTS; do
+    for _c in $(components_for "$_p"); do
+        case " $NEEDED_COMPONENTS " in *" $_c "*) ;; *) NEEDED_COMPONENTS="$NEEDED_COMPONENTS $_c";; esac
+    done
+done
+NEEDED_COMPONENTS="$(printf '%s' "$NEEDED_COMPONENTS" | sed 's/^ *//')"
+
 CACHE_ROOT="$CQM_ROOT/cache"
-BUNDLE_DIR="$BUNDLE_ROOT/$BUNDLE_VERSION"
 IMAGE="$DOCKER_IMG:$DOCKER_IMG_TAG"
 [[ -n "$WORK_PATH" ]] || WORK_PATH="$CQM_ROOT/workspace"
+
+# Each component unpacks into its own versioned directory, so a toolchain
+# update to one does not disturb the others and several versions can sit side
+# by side.
+QCOM_DIR_OVERRIDE=""
+comp_dir()  {
+    # -t hands us a qcom tree that lives wherever the caller put it.
+    [ "$1" = qcom ] && [ -n "$QCOM_DIR_OVERRIDE" ] && { echo "$QCOM_DIR_OVERRIDE"; return; }
+    echo "$CQM_ROOT/$1/$BUNDLE_VERSION"
+}
+comp_url()  { eval "printf '%s' \"\${URL_$1}\""; }
+comp_sha()  { eval "printf '%s' \"\${SHA_$1}\""; }
+# Peak space each component needs: the archive plus what it unpacks to, since
+# the download is only deleted after a successful unpack.
+comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; esac; }
 
 count=0
 [[ -n "$PKG_URL" ]]        && count=$((count+1))
 [[ -n "$TOOL_PATH" ]]      && count=$((count+1))
 [[ -n "$FILE_TOOL_PATH" ]] && count=$((count+1))
 (( count <= 1 )) || die "give only one of -u, -t or -f"
+
+# -u/-c/-t/-f all refer to the qcom bundle: it is the one a recipient is handed
+# and the only one this script cannot fetch on its own.
+[[ -n "$PKG_URL" ]] && URL_qcom="$PKG_URL"
+[[ -n "$PKG_SHA256" ]] && SHA_qcom="$PKG_SHA256"
 
 # ===========================================================================
 # Guards — the other build environments in this repository are off limits
@@ -161,8 +280,12 @@ assert_no_legacy_collision() {
     # CQM_IMAGE_REPO can never overwrite one of them.
     [[ "$DOCKER_IMG" != */jammy/owrt ]] \
         || die "refusing to publish under the */jammy/owrt naming family used by the other environments"
-    [[ "$DOCKER_CONTAINER" == "${DOCKER_PRV_NAME}_"* ]] \
-        || die "container name '$DOCKER_CONTAINER' is outside the ${DOCKER_PRV_NAME}_* namespace"
+    local prod name
+    for prod in $PRODUCTS; do
+        name="$(container_for "$prod")"
+        [[ "$name" == "${DOCKER_PRV_NAME}_"* ]] \
+            || die "container name '$name' is outside the ${DOCKER_PRV_NAME}_* namespace"
+    done
 }
 
 # ===========================================================================
@@ -323,15 +446,13 @@ check_free_space() {
 }
 
 verify_archive() {
-    local archive="$1" sumfile="$2" want="" got
-    if [ -n "$PKG_SHA256" ]; then
-        want="$PKG_SHA256"
-    else
+    local archive="$1" sumfile="$2" want="${3:-}" url="${4:-}" got
+    if [ -z "$want" ]; then
         # A plain HTTPS mirror publishes <url>.sha256 next to the archive. A
         # Drive link cannot: every Drive file has its own id, so appending
         # ".sha256" would just be a malformed id. Hence -c.
-        if [ -n "$PKG_URL" ] && [ -z "$(gdrive_file_id "$PKG_URL")" ]; then
-            fetch_any "${PKG_URL}.sha256" "$sumfile" >/dev/null 2>&1 || true
+        if [ -n "$url" ] && [ -z "$(gdrive_file_id "$url")" ]; then
+            fetch_any "${url}.sha256" "$sumfile" >/dev/null 2>&1 || true
         fi
         [ -r "$sumfile" ] && want="$(awk '{print $1}' "$sumfile" | head -1)"
     fi
@@ -349,26 +470,47 @@ The download is corrupt or incomplete. Re-run with -F."
     ok "checksum ok"
 }
 
+# One directory that must exist inside each component's archive. Used both to
+# detect an extra wrapping directory and to reject an archive of the wrong kind
+# before it is moved into place under the wrong name.
+comp_marker() {
+    case "$1" in
+        qcom)    echo qct;;
+        yocto)   echo downloads;;
+        openwrt) echo openwrt-prebuilt-backup;;
+    esac
+}
+
 extract_archive() {
-    local archive="$1" dest="$2" root
+    local archive="$1" dest="$2" component="$3" root marker
+    marker="$(comp_marker "$component")"
     command -v zstd >/dev/null 2>&1 || die "zstd is required to unpack the bundle (sudo apt install zstd)"
-    log "unpacking to $dest — this takes several minutes"
+    log "unpacking $component to $dest — this takes several minutes"
     rm -rf "$dest.partial"; mkdir -p "$dest.partial"
     # --long=27 must match the window the bundle was packed with.
     tar --use-compress-program="zstd -d -T0 --long=27" -xf "$archive" -C "$dest.partial"
     root="$dest.partial"
-    if [ ! -d "$root/qct" ]; then
+    if [ ! -d "$root/$marker" ]; then
         root="$(find "$dest.partial" -mindepth 1 -maxdepth 1 -type d | head -1)"
-        [ -d "$root/qct" ] || die "unexpected archive layout: no qct/ directory inside"
+        [ -n "$root" ] && [ -d "$root/$marker" ] \
+            || die "this does not look like the $component bundle: no $marker/ inside $archive"
     fi
     rm -rf "$dest"; mv "$root" "$dest"; rm -rf "$dest.partial"
     chmod 0755 "$dest"
 }
 
+comp_required() {
+    case "$1" in
+        qcom)    echo "qct/software sectools prebuilts";;
+        yocto)   echo "downloads llvm-arm-toolchain-ship";;
+        openwrt) echo "openwrt-prebuilt-backup";;
+    esac
+}
+
 finalise_bundle() {
-    local dir="$1" required
-    for required in qct/software sectools prebuilts; do
-        [ -d "$dir/$required" ] || die "bundle is incomplete: $dir/$required is missing"
+    local dir="$1" component="$2" required
+    for required in $(comp_required "$component"); do
+        [ -d "$dir/$required" ] || die "the $component bundle is incomplete: $dir/$required is missing"
     done
     printf '%s\n' "$BUNDLE_VERSION" > "$dir/BUNDLE_VERSION"
     if [ -r "$dir/SHA256SUMS.spot" ]; then
@@ -380,65 +522,83 @@ finalise_bundle() {
         warn "bundle ships no SHA256SUMS.spot; contents not verified"
     fi
     touch "$dir/.complete"
-    ok "bundle $BUNDLE_VERSION ready ($(du -sh "$dir" | cut -f1)) at $dir"
+    ok "$component $BUNDLE_VERSION ready ($(du -sh "$dir" | cut -f1)) at $dir"
 }
 
-acquire_bundle() {
+acquire_component() {
+    local component="$1"
+    local dir url sha archive sumfile downloaded=no
+
+    dir="$(comp_dir "$component")"
+    url="$(comp_url "$component")"
+    sha="$(comp_sha "$component")"
+
+    # -t points at a qcom bundle the caller already unpacked; use it in place.
+    if [ "$component" = qcom ] && [ -n "$TOOL_PATH" ]; then
+        [ -d "$TOOL_PATH/qct/software" ] \
+            || die "-t $TOOL_PATH does not look like an unpacked qcom bundle (no qct/software)"
+        QCOM_DIR_OVERRIDE="$TOOL_PATH"
+        log "using the qcom bundle at $TOOL_PATH"
+        return 0
+    fi
+
     if [ -n "$DRYRUNCMD" ]; then
-        if [ -n "$TOOL_PATH" ]; then
-            echo "+ use the unpacked bundle at $TOOL_PATH"
-        elif [ -f "$BUNDLE_DIR/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
-            echo "+ bundle $BUNDLE_VERSION already installed at $BUNDLE_DIR — no download"
-        elif [ -n "$FILE_TOOL_PATH" ]; then
-            echo "+ verify and unpack $FILE_TOOL_PATH -> $BUNDLE_DIR"
+        if [ -f "$dir/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
+            echo "+ $component $BUNDLE_VERSION already installed at $dir — no download"
+        elif [ "$component" = qcom ] && [ -n "$FILE_TOOL_PATH" ]; then
+            echo "+ verify and unpack $FILE_TOOL_PATH -> $dir"
         else
-            echo "+ download ${PKG_URL:-<no -u given>} -> $BUNDLE_ROOT/cqm22x-pkg-${BUNDLE_VERSION}.tar.zst"
-            echo "+ verify sha256, then unpack -> $BUNDLE_DIR"
+            echo "+ download ${url:-<no link for $component>} -> $CQM_ROOT/$component/cqm22x-$component-${BUNDLE_VERSION}.tar.zst"
+            echo "+ verify sha256, then unpack -> $dir"
         fi
         return 0
     fi
 
-    # -t points at a bundle the caller already unpacked; use it in place.
-    if [ -n "$TOOL_PATH" ]; then
-        [ -d "$TOOL_PATH/qct/software" ] \
-            || die "-t $TOOL_PATH does not look like an unpacked bundle (no qct/software)"
-        BUNDLE_DIR="$TOOL_PATH"
-        log "using the bundle at $BUNDLE_DIR"
-        [ -f "$BUNDLE_DIR/BUNDLE_VERSION" ] || printf '%s\n' "$BUNDLE_VERSION" > "$BUNDLE_DIR/BUNDLE_VERSION" 2>/dev/null || true
+    if [ -f "$dir/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
+        ok "$component $BUNDLE_VERSION is already installed at $dir — nothing to download"
         return 0
     fi
 
-    if [ -f "$BUNDLE_DIR/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
-        ok "bundle $BUNDLE_VERSION is already installed at $BUNDLE_DIR — nothing to download"
-        log "(pass -F to replace it)"
-        return 0
-    fi
-
-    [ -n "$PKG_URL" ] || [ -n "$FILE_TOOL_PATH" ] \
-        || die "no bundle given. Use -u <link>, -f <archive> or -t <unpacked directory>."
-
-    mkdir -p "$BUNDLE_ROOT"
-    local archive sumfile downloaded=no
-    if [ -n "$FILE_TOOL_PATH" ]; then
+    if [ "$component" = qcom ] && [ -n "$FILE_TOOL_PATH" ]; then
         [ -f "$FILE_TOOL_PATH" ] || die "not a file: $FILE_TOOL_PATH"
         archive="$FILE_TOOL_PATH"
         sumfile="$FILE_TOOL_PATH.sha256"
     else
-        check_free_space "$BUNDLE_ROOT" 75
-        archive="$BUNDLE_ROOT/cqm22x-pkg-${BUNDLE_VERSION}.tar.zst"
+        if [ -z "$url" ]; then
+            if [ "$component" = qcom ]; then
+                die "no qcom bundle given.
+The Qualcomm toolchain is not public, so this script cannot fetch it on its own.
+Cavli supplies a link and its sha256 — pass them with -u and -c, or point -t at
+an already-unpacked copy, or -f at an already-downloaded archive."
+            fi
+            die "no link is built in for the $component bundle.
+Set CQM_$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')_URL to a mirror, or pass -t/-f for a local copy."
+        fi
+        mkdir -p "$CQM_ROOT/$component"
+        check_free_space "$CQM_ROOT/$component" "$(comp_gb "$component")"
+        archive="$CQM_ROOT/$component/cqm22x-${component}-${BUNDLE_VERSION}.tar.zst"
         sumfile="$archive.sha256"
-        fetch_any "$PKG_URL" "$archive"
+        log "fetching the $component bundle"
+        fetch_any "$url" "$archive"
         downloaded=yes
     fi
 
-    verify_archive "$archive" "$sumfile"
-    extract_archive "$archive" "$BUNDLE_DIR"
-    finalise_bundle "$BUNDLE_DIR"
+    verify_archive "$archive" "$sumfile" "$sha" "$url"
+    extract_archive "$archive" "$dir" "$component"
+    finalise_bundle "$dir" "$component"
 
     if [ "$downloaded" = yes ] && [ "$KEEP_ARCHIVE" != yes ]; then
         log "removing $(basename "$archive") (-k to keep it)"
         rm -f "$archive" "$sumfile"
     fi
+}
+
+# Fetch every component the selected products need, once each.
+acquire_all() {
+    local c
+    for c in $NEEDED_COMPONENTS; do
+        acquire_component "$c"
+    done
 }
 
 # ===========================================================================
@@ -464,67 +624,110 @@ If ghcr.io is unreachable from this network, Cavli also ships the image as a
 tar file. Download it, then:
 
     docker load -i cqm22x-buildenv.tar
-    bash $0 -w "$WORK_PATH" -t "$BUNDLE_DIR" -P
+    bash $0 -w "$WORK_PATH" -p $(printf '%s' "$PRODUCTS" | tr ' ' ',') -P
 
 EOF
     exit 1
 }
 
 create_container() {
-    if docker ps -a --format '{{.Names}}' | grep -qx "$DOCKER_CONTAINER"; then
+    local product="$1"
+    local container; container="$(container_for "$product")"
+    local comps; comps="$(components_for "$product")"
+
+    if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
         if [ "$RECREATE" != yes ]; then
-            log "container $DOCKER_CONTAINER already exists — reusing it (-R to rebuild)"
-            docker start "$DOCKER_CONTAINER" >/dev/null
+            log "container $container already exists — reusing it (-R to rebuild)"
+            [ -n "$DRYRUNCMD" ] || docker start "$container" >/dev/null
             return
         fi
-        log "removing the existing container $DOCKER_CONTAINER"
-        run docker rm -f "$DOCKER_CONTAINER" >/dev/null
+        log "removing the existing container $container"
+        run docker rm -f "$container" >/dev/null
     fi
+
+    local qcom_dir openwrt_dir yocto_dir
+    qcom_dir="$(comp_dir qcom)"
 
     # Validate every bind source up front. Docker silently creates an empty
     # directory for a missing one, which turns a clear setup error into a
     # confusing "toolchain not found" halfway through a build.
-    local missing=() p
-    for p in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
-        [ -e "$BUNDLE_DIR/$p" ] || missing+=("$p")
+    local missing=() pth
+    for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
+        [ -e "$qcom_dir/$pth" ] || missing+=("qcom:$pth")
     done
-    [ ${#missing[@]} -eq 0 ] || die "the bundle at $BUNDLE_DIR is missing: ${missing[*]}"
+    case " $comps " in
+        *" openwrt "*)
+            openwrt_dir="$(comp_dir openwrt)"
+            [ -e "$openwrt_dir/openwrt-prebuilt-backup" ] || missing+=("openwrt:openwrt-prebuilt-backup")
+            ;;
+    esac
+    case " $comps " in
+        *" yocto "*)
+            yocto_dir="$(comp_dir yocto)"
+            for pth in downloads llvm-arm-toolchain-ship; do
+                [ -e "$yocto_dir/$pth" ] || missing+=("yocto:$pth")
+            done
+            ;;
+    esac
+    if [ ${#missing[@]} -ne 0 ]; then
+        # Under -d nothing has been downloaded, so absent bundles are expected
+        # and are not an error: the point of a dry run is to see the plan on a
+        # machine where none of this exists yet.
+        [ -n "$DRYRUNCMD" ] \
+            && warn "not present yet (would be downloaded first): ${missing[*]}" \
+            || die "bundles for $product are incomplete: ${missing[*]}"
+    fi
 
-    # Caches are kept per product: the two products must not share one OpenWrt
+    # Caches are kept per product: two products must not share one OpenWrt
     # build_dir and staging_dir.
-    mkdir -p "$CACHE_ROOT/shared/yocto-downloads" \
-             "$CACHE_ROOT/$PRODUCT/openwrt" \
-             "$CACHE_ROOT/$PRODUCT/ccache" \
-             "$WORK_PATH"
+    run mkdir -p "$CACHE_ROOT/$product/openwrt" "$CACHE_ROOT/$product/ccache" "$WORK_PATH"
 
     local -a args=(
-        --name "$DOCKER_CONTAINER" --hostname "$DOCKER_PRV_NAME"
+        --name "$container" --hostname "$DOCKER_PRV_NAME"
         # -dit with bash as the command, so `docker start -i` attaches to a
         # login shell — the same way every other helper in this repository
         # behaves. No --restart: the container is meant to end when you exit.
         -dit
         -e "TERM=xterm-256color"
         -e "CQM_UID=$__UID" -e "CQM_GID=$__GID" -e "CQM_USER=$__USERNAME"
-        -e "CQM_PRODUCT=$PRODUCT"
+        -e "CQM_PRODUCT=$product"
         --add-host "${DOCKER_PRV_NAME}:127.0.0.1"
-        -v "$BUNDLE_DIR/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
-        -v "$BUNDLE_DIR/qct/software/arm:/pkg/qct/software/arm:ro"
-        -v "$BUNDLE_DIR/qct/software/llvm:/pkg/qct/software/llvm:ro"
-        -v "$BUNDLE_DIR/sectools:/pkg/sectools:ro"
-        -v "$BUNDLE_DIR/prebuilts:/pkg/prebuilts:ro"
-        -v "$CACHE_ROOT/$PRODUCT/openwrt:/pkg/openwrt"
-        -v "$CACHE_ROOT/$PRODUCT/ccache:/ccache"
-        -v "$CACHE_ROOT/shared/yocto-downloads:/pkg/yocto/downloads"
+        -v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
+        -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
+        -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
+        -v "$qcom_dir/sectools:/pkg/sectools:ro"
+        -v "$qcom_dir/prebuilts:/pkg/prebuilts:ro"
+        -v "$CACHE_ROOT/$product/openwrt:/pkg/openwrt"
+        -v "$CACHE_ROOT/$product/ccache:/ccache"
         -v "$WORK_PATH:/work"
         -v /etc/localtime:/etc/localtime:ro
     )
+    [ -f "$qcom_dir/BUNDLE_VERSION" ]  && args+=( -v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
+    [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
+
     # OpenWrt's own prebuilt tool/toolchain cache. set_openwrt_env.sh finds it
     # here by default and restores it automatically on the first app build,
     # instead of compiling gcc/binutils/musl from scratch.
-    [ -d "$BUNDLE_DIR/openwrt-prebuilt-backup" ]         && args+=( -v "$BUNDLE_DIR/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro" )
-    [ -f "$BUNDLE_DIR/BUNDLE_VERSION" ]  && args+=( -v "$BUNDLE_DIR/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
-    [ -r "$BUNDLE_DIR/SHA256SUMS.spot" ] && args+=( -v "$BUNDLE_DIR/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
-    [ -d "$HOME/.ssh" ]                  && args+=( -v "$HOME/.ssh:/home/$__USERNAME/.ssh:ro" )
+    if [ -n "${openwrt_dir:-}" ]; then
+        args+=( -v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro" )
+        [ -f "$openwrt_dir/BUNDLE_VERSION" ] && args+=( -v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro" )
+    fi
+
+    if [ -n "${yocto_dir:-}" ]; then
+        # llvm-arm-toolchain-ship is a toolchain and is mounted read-only like
+        # every other one.
+        args+=( -v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro" )
+        # downloads is NOT a toolchain — it is bitbake's DL_DIR, and bitbake
+        # writes into it whenever a recipe needs a tarball the bundle did not
+        # carry. Mounting it read-only would break the first build that needs
+        # anything new, so it is writable on purpose. Shipping it prefilled is
+        # the entire reason this component exists: it turns the first cqm211
+        # build from a long series of downloads into a local read.
+        args+=( -v "$yocto_dir/downloads:/pkg/yocto/downloads" )
+        [ -f "$yocto_dir/BUNDLE_VERSION" ] && args+=( -v "$yocto_dir/BUNDLE_VERSION:/pkg/YOCTO_VERSION:ro" )
+    fi
+
+    [ -d "$HOME/.ssh" ] && args+=( -v "$HOME/.ssh:/home/$__USERNAME/.ssh:ro" )
 
     if [ "$ENABLE_USB" = yes ]; then
         # Enough access to drive EDL/QDL and the DIAG serial port without
@@ -544,7 +747,7 @@ create_container() {
         [ -n "$gids" ] && args+=( -e "CQM_GROUPS=$gids" )
     fi
 
-    log "creating container $DOCKER_CONTAINER"
+    log "creating container $container ($product: $comps)"
     if [ -n "$DRYRUNCMD" ]; then
         echo "+ docker run ${args[*]} $IMAGE bash -l"
     else
@@ -553,6 +756,7 @@ create_container() {
 }
 
 verify_container() {
+    local container; container="$(container_for "$1")"
     [ -z "$DRYRUNCMD" ] || return 0
     log "checking the environment"
     # `docker exec` does not run the image entrypoint, so it would land as root
@@ -562,7 +766,7 @@ verify_container() {
     [ -t 0 ] && [ -t 1 ] && tty=(-i -t)
     docker exec "${tty[@]}" -u "$__UID:$__GID" \
         -e "HOME=/home/$__USERNAME" -e "USER=$__USERNAME" \
-        "$DOCKER_CONTAINER" cqm-doctor \
+        "$container" cqm-doctor \
         || die "the environment check failed — see above. Builds from this container would not match CI."
 }
 
@@ -572,24 +776,33 @@ verify_container() {
 # source lives. Without -r the toolchain lands in $HOME, which on many machines
 # is a small root partition.
 print_plan() {
-    local tc_fs tc_free probe
-    # df fails on a path that does not exist yet, so ask about the nearest
-    # ancestor that does.
-    probe="$BUNDLE_ROOT"
-    while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="$(dirname "$probe")"; done
-    tc_fs="$(df -h --output=target "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
-    tc_free="$(df -h --output=avail "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
-    cat <<EOF
-${C_INFO}==>${C_OFF} Plan
-
-  toolchain   $BUNDLE_DIR
-              on $tc_fs, $tc_free free — needs ~60 GB (change with -r)
-  caches      $CACHE_ROOT/$PRODUCT
-  source      $WORK_PATH  ->  /work
-  image       $IMAGE
-  container   $DOCKER_CONTAINER
-
-EOF
+    local c dir probe fs free
+    printf '%s==>%s Plan\n\n' "$C_INFO" "$C_OFF"
+    printf '  products    %s\n' "$PRODUCTS"
+    printf '  bundles     %s (version %s)\n\n' "$NEEDED_COMPONENTS" "$BUNDLE_VERSION"
+    for c in $NEEDED_COMPONENTS; do
+        dir="$(comp_dir "$c")"
+        # df fails on a path that does not exist yet, so ask about the nearest
+        # ancestor that does.
+        probe="$dir"
+        while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe="$(dirname "$probe")"; done
+        fs="$(df -h --output=target "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+        free="$(df -h --output=avail "$probe" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+        printf '  %-11s %s\n' "$c" "$dir"
+        printf '              on %s, %s free — needs ~%s GB (change with -r)\n' "$fs" "$free" "$(comp_gb "$c")"
+        if [ -f "$dir/.complete" ] && [ "$FORCE_FETCH" != yes ]; then
+            printf '              already installed, will not be downloaded\n'
+        elif [ -z "$(comp_url "$c")" ] && [ "$c" = qcom ] && [ -z "$TOOL_PATH$FILE_TOOL_PATH" ]; then
+            printf '              %sno link given — pass -u and -c%s\n' "$C_WARN" "$C_OFF"
+        fi
+    done
+    printf '\n  source      %s  ->  /work\n' "$WORK_PATH"
+    printf '  image       %s\n' "$IMAGE"
+    for c in $PRODUCTS; do
+        printf '  container   %-38s (%s)\n' "$(container_for "$c")" "$(components_for "$c")"
+        printf '  caches      %s\n' "$CACHE_ROOT/$c"
+    done
+    printf '\n'
 }
 
 main() {
@@ -597,10 +810,11 @@ main() {
     print_plan
 
     if [ "$FETCH_ONLY" = yes ]; then
-        acquire_bundle
+        acquire_all
         printf '\n'
-        ok "Bundle installed at $BUNDLE_DIR"
-        printf '\nTo build with it:\n\n    bash %s -w %s -t %s\n\n' "$0" "$WORK_PATH" "$BUNDLE_DIR"
+        ok "Bundles installed under $CQM_ROOT"
+        printf '\nTo build with them:\n\n    bash %s -w %s -p %s\n\n' \
+            "$0" "$WORK_PATH" "$(printf '%s' "$PRODUCTS" | tr ' ' ',')"
         return 0
     fi
 
@@ -608,22 +822,30 @@ main() {
     for t in curl tar; do
         command -v "$t" >/dev/null 2>&1 || die "missing required tool: $t"
     done
-    acquire_bundle
-    pull_image
-    create_container
-    verify_container
 
+    acquire_all
+    pull_image
+
+    local p
+    for p in $PRODUCTS; do
+        create_container "$p"
+        verify_container "$p"
+    done
+
+    printf '\n'
+    ok "DONE — $(printf '%s' "$PRODUCTS" | wc -w) container(s) ready for user $__USERNAME"
     cat <<EOF
 
-$(ok "DONE create container $DOCKER_CONTAINER for user $__USERNAME")
-
   Work path : $WORK_PATH  ->  /work
-  Tools     : $BUNDLE_DIR  ->  /pkg  (read-only)
-  Caches    : $CACHE_ROOT/$PRODUCT
+  Bundles   : $(for c in $NEEDED_COMPONENTS; do printf '%s ' "$(comp_dir "$c")"; done)
   USB       : $([ "$ENABLE_USB" = yes ] && echo "passed through, flashing available" || echo "disabled")
 
 Let start it
-docker start -i $DOCKER_CONTAINER
+EOF
+    for p in $PRODUCTS; do
+        printf 'docker start -i %s\n' "$(container_for "$p")"
+    done
+    cat <<EOF
 
 The other build environments in this repository were not modified.
 EOF
