@@ -1,6 +1,12 @@
 # CQM22x — build environment guide
 
-From a bare machine to a firmware image.
+From a bare machine to a firmware image, for all three product lines:
+
+| Product | Chip | Userspace |
+|---|---|---|
+| `cqm220-3` | sdx35 | OpenWrt |
+| `cqm220-0` | sdx32 | OpenWrt |
+| `cqm211` | sdx61/62/65 | Yocto |
 
 - [1. What you need](#1-what-you-need)
 - [2. Set up the container](#2-set-up-the-container)
@@ -17,11 +23,11 @@ From a bare machine to a firmware image.
 | | |
 |---|---|
 | OS | Ubuntu or Debian x86_64 (other distros work, but install Docker yourself first) |
-| Disk | ~120 GB free — 48 GB toolchain, 2.4 GB image, the rest for source and build output |
+| Disk | ~120 GB free for one product line, ~150 GB for all of them — see the bundle table in [2](#2-set-up-the-container) |
 | RAM | 16 GB minimum, 32 GB comfortable |
 | Network | access to `github.com`, `ghcr.io` and `drive.google.com` |
 | Tools | `curl`, `wget`, `tar`, `zstd`. Docker is installed for you if missing. |
-| From Cavli | the **toolchain bundle link** and its **sha256** |
+| From Cavli | the **qcom bundle link** and its **sha256** — that one archive only |
 
 Install the small stuff if it is not there:
 
@@ -43,7 +49,7 @@ wget https://raw.githubusercontent.com/cavli-wireless/docker/refs/heads/main/cqm
 ```
 
 ```bash
-bash container_docker_helper.sh -w /mnt/ -u '<bundle link from Cavli>' -c '<sha256 from Cavli>'
+bash container_docker_helper.sh -w /mnt/ -u '<qcom link from Cavli>' -c '<sha256 from Cavli>'
 ```
 
 ```bash
@@ -51,9 +57,52 @@ docker start -i build_cqm22x_jammy_$(whoami)
 ```
 
 The middle command does everything: installs Docker if missing, downloads the
-~12 GB toolchain bundle, verifies its checksum, unpacks it to ~48 GB, pulls the
+bundles this product needs, verifies their checksums, unpacks them, pulls the
 build image, creates the container and checks the environment. Budget 30–60
 minutes on a first run, almost all of it download and unpack.
+
+### Three bundles, only what you need
+
+| Bundle | Packed | Unpacked | Who needs it | Where the link comes from |
+|---|---|---|---|---|
+| `qcom` | ~13 GB | ~60 GB | every product | **Cavli — pass with `-u`/`-c`** |
+| `openwrt` | ~2.3 GB | ~10 GB | cqm220-0/3 | built into the script |
+| `yocto` | ~24 GB | ~27 GB | cqm211 | built into the script |
+
+So an sdx35 machine downloads about 15 GB and an sdx61 machine about 37 GB. Ask
+for both and the shared `qcom` bundle is still fetched only once.
+
+Only `qcom` is proprietary, which is why it is the only one you have to be given
+a link for. The other two are build caches assembled from public sources — they
+exist to make the first build fast, not to supply anything that could not be
+rebuilt.
+
+> **If Cavli hands you a `cqm22x-pkg-1.0.x` link** rather than a `cqm22x-qcom-`
+> one, it still works — the script goes by content, not by filename. Be aware
+> that those older archives bundled the OpenWrt cache inside the toolchain, so
+> on a cqm220 machine you end up fetching that cache twice, about 2 GB of waste.
+> Nothing breaks; the separately mounted copy is the one the build uses.
+
+### Choosing products
+
+```bash
+# sdx35 — the default, same as passing -p cqm220-3
+bash container_docker_helper.sh -w /mnt/ -u '<link>' -c '<sha256>'
+
+# sdx61/62/65
+bash container_docker_helper.sh -w /mnt/ -p cqm211 -u '<link>' -c '<sha256>'
+
+# an sdx35 and an sdx61 container side by side
+bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c '<sha256>'
+
+# every product
+bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c '<sha256>'
+```
+
+You get one container per product — `build_cqm22x_jammy_<user>` for cqm220-3 and
+`build_cqm22x_jammy_<user>_<product>` for the others. They share the bundles but
+never share an OpenWrt `build_dir`, which is the whole reason they are separate
+containers.
 
 It is safe to re-run. A bundle already unpacked is not downloaded again.
 
@@ -78,27 +127,33 @@ newgrp docker      # or just log out and back in
 
 ### Other ways to supply the toolchain
 
+`-u`, `-c`, `-f` and `-t` all refer to the **qcom** bundle: it is the only one
+the script cannot fetch on its own.
+
 ```bash
 # the .tar.zst is already on this machine
-bash container_docker_helper.sh -w /mnt/ -f ~/cqm22x-pkg-1.0.0.tar.zst
+bash container_docker_helper.sh -w /mnt/ -f ~/cqm22x-qcom-1.1.0.tar.zst
 
 # it is already unpacked somewhere
-bash container_docker_helper.sh -w /mnt/ -t /data/cqm22x-pkg
+bash container_docker_helper.sh -w /mnt/ -t /data/cqm22x-qcom
 
-# fetch and unpack it now, set up the container later
-bash container_docker_helper.sh -u '<link>' -c '<sha256>' -n
+# fetch and unpack everything now, set up the containers later
+bash container_docker_helper.sh -p all -u '<link>' -c '<sha256>' -n
 ```
+
+To serve the public bundles from your own mirror instead of Drive, set
+`CQM_YOCTO_URL` / `CQM_OPENWRT_URL` (and the matching `_SHA256`).
 
 ### Options worth knowing
 
 | Flag | Meaning |
 |---|---|
 | `-w PATH` | where your **source** lives. Mounted at `/work` inside |
-| `-r DIR` | where the **toolchain and caches** go (default `$HOME/cqm22x`) |
-| `-u URL` | bundle link (Google Drive or plain HTTPS) |
-| `-c HEX` | expected sha256 of the bundle |
-| `-p NAME` | `cqm220-3` (default) or `cqm220-0` |
-| `-V VER` | which toolchain bundle version to use (default `1.0.1`) |
+| `-r DIR` | where the **bundles and caches** go (default `$HOME/cqm22x`) |
+| `-u URL` | qcom bundle link (Google Drive or plain HTTPS) |
+| `-c HEX` | expected sha256 of the qcom bundle |
+| `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211` |
+| `-V VER` | which bundle version to use (default `1.1.0`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
 | `-R` | rebuild the container from scratch |
 | `-d` | dry run: print what would happen, change nothing |
@@ -108,15 +163,15 @@ bash container_docker_helper.sh -u '<link>' -c '<sha256>' -n
 
 ### `-w` and `-r` are different, and it matters
 
-`-w` controls only where the source goes. The 60 GB of toolchain follows `-r`,
-which defaults to `$HOME/cqm22x` — often a small root partition. So this:
+`-w` controls only where the source goes. The bundles follow `-r`, which
+defaults to `$HOME/cqm22x` — often a small root partition. So this:
 
 ```bash
 bash container_docker_helper.sh -w /mnt/ -u '<link>' -c '<sha256>'
 ```
 
-puts the source under `/mnt/` and the 60 GB under `$HOME`. To keep everything
-on the big disk, say so:
+puts the source under `/mnt/` and 60–100 GB of bundles under `$HOME`. To keep
+everything on the big disk, say so:
 
 ```bash
 bash container_docker_helper.sh -w /mnt/ -r /mnt/tools -u '<link>' -c '<sha256>'
@@ -128,13 +183,26 @@ piece lands on and how much room is left there:
 ```
 ==> Plan
 
-  toolchain   /mnt/tools/toolchain/1.0.0
+  products    cqm220-3 cqm211
+  bundles     qcom openwrt yocto (version 1.1.0)
+
+  qcom        /mnt/tools/qcom/1.1.0
               on /mnt, 1.3T free — needs ~60 GB (change with -r)
-  caches      /mnt/tools/cache/cqm220-3
+  openwrt     /mnt/tools/openwrt/1.1.0
+              on /mnt, 1.3T free — needs ~12 GB (change with -r)
+  yocto       /mnt/tools/yocto/1.1.0
+              on /mnt, 1.3T free — needs ~30 GB (change with -r)
+
   source      /mnt/  ->  /work
   image       ghcr.io/cavli-wireless-public/cqm22x-buildenv:latest
-  container   build_cqm22x_jammy_you
+  container   build_cqm22x_jammy_you                 (qcom openwrt)
+  caches      /mnt/tools/cache/cqm220-3
+  container   build_cqm22x_jammy_you_cqm211          (qcom yocto)
+  caches      /mnt/tools/cache/cqm211
 ```
+
+A bundle already installed says so instead of a size, so you can see at a glance
+what a re-run would actually download.
 
 Running with `-d` first costs a second and shows exactly this, plus every step
 it would take. Worth doing on any new machine.
@@ -143,27 +211,28 @@ it would take. Worth doing on any new machine.
 
 ```
 <-r>/                            default $HOME/cqm22x
-├── toolchain/
-│   ├── cqm22x-pkg-1.0.0.tar.zst   downloaded here, 12 GB, deleted after
-│   │                              unpacking unless you pass -k
-│   └── 1.0.0/                     unpacked here, 48 GB, mounted read-only
+├── qcom/
+│   ├── cqm22x-qcom-1.1.0.tar.zst  downloaded here, deleted after unpacking
+│   │                              unless you pass -k
+│   └── 1.1.0/                     unpacked here, ~60 GB, mounted read-only
+├── openwrt/1.1.0/                 cqm220-* — openwrt-prebuilt-backup/
+├── yocto/1.1.0/                   cqm211 — downloads/, llvm-arm-toolchain-ship/
 └── cache/
-    ├── shared/yocto-downloads/    shared by both products
     ├── cqm220-3/{openwrt,ccache}
-    └── cqm220-0/{openwrt,ccache}
+    ├── cqm220-0/{openwrt,ccache}
+    └── cqm211/{openwrt,ccache}
 
 <-w>/                            your source, mounted at /work
 ```
 
-Several toolchain versions can live side by side under `toolchain/`; `-V`
-picks which one the container mounts, without downloading anything again.
+Each bundle is versioned separately, so several versions can live side by side;
+`-V` picks which the containers mount, without downloading anything again.
 
-| Bundle | Contents |
-|---|---|
-| `1.0.0` | Qualcomm toolchain only — enough for modem, boot and tz |
-| `1.0.1` | adds OpenWrt's prebuilt tool/toolchain cache, so the first app build restores instead of compiling gcc/binutils/musl from source |
-
-Use `1.0.1` unless you have a reason not to.
+| Bundle | Contents | Why it exists |
+|---|---|---|
+| `qcom` | HEXAGON, LLVM, linaro, sectools, prebuilts | the actual toolchain — nothing builds without it |
+| `openwrt` | OpenWrt prebuilt host tools and cross toolchain | the first app build restores it instead of compiling gcc/binutils/musl from source |
+| `yocto` | bitbake `DL_DIR` cache + LLVM/ARM toolchain | the first cqm211 build reads sources locally instead of fetching hundreds of tarballs |
 
 Nothing of value lives inside the container — the writable layer stays around
 200 kB. Deleting and recreating it costs seconds and loses nothing.
@@ -323,15 +392,29 @@ With `cqmdev`:
 ./cqmdev run <cmd>        # one-off command
 ./cqmdev doctor           # re-check the environment
 ./cqmdev status           # container, image and bundle versions
-./cqmdev -p cqm220-0 ...  # the other product
+./cqmdev -p cqm220-0 ...  # another product
+./cqmdev -p cqm211 shell  # the Yocto line
 ```
 
-### Both products on one machine
+### Several products on one machine
 
-Pass `-p cqm220-0` to the setup script. You get a second container
-(`build_cqm22x_jammy_<user>_cqm220-0`) sharing the same toolchain bundle but
-with its own OpenWrt cache — the two products must never share a `build_dir`,
-or you get stale artefacts from the other product's configuration.
+Pass a list to the setup script — `-p cqm220-3,cqm211`, or `-p all`. Each
+product gets its own container:
+
+| Product | Container |
+|---|---|
+| `cqm220-3` | `build_cqm22x_jammy_<user>` |
+| `cqm220-0` | `build_cqm22x_jammy_<user>_cqm220-0` |
+| `cqm211` | `build_cqm22x_jammy_<user>_cqm211` |
+
+They share the `qcom` bundle — it is downloaded and stored once — but each keeps
+its own OpenWrt cache and ccache. Two products must never share a `build_dir`,
+or you get stale artefacts from the other product's configuration, and that is
+the reason they are separate containers rather than one container with
+everything mounted.
+
+The bundles follow from the products you asked for: `-p cqm220-3,cqm220-0` pulls
+qcom + openwrt, `-p cqm211` pulls qcom + yocto, `-p all` pulls all three.
 
 ### Flashing
 
@@ -371,7 +454,7 @@ Your network cannot reach `ghcr.io`. Ask Cavli for the image tar:
 
 ```bash
 docker load -i cqm22x-buildenv.tar
-bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/toolchain/1.0.0 -P
+bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/qcom/1.1.0 -P
 ```
 
 **`checksum mismatch`**
@@ -429,7 +512,7 @@ The container holds no state — the toolchain, source and every cache are bind
 mounts from the host. Throwing it away costs nothing:
 
 ```bash
-bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/toolchain/1.0.0 -P -R
+bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/qcom/1.1.0 -P -R
 ```
 
 ---
@@ -439,21 +522,35 @@ bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/toolchain/1.0.0 -P -R
 On a machine with a known-good `/pkg`:
 
 ```bash
-./pack-bundle.sh --version 1.0.1 --source /pkg --upload
+./pack-bundle.sh --component all --version 1.1.0 --source /pkg --upload
 ```
 
-It stages the licensed subtrees, writes `MANIFEST.txt` and a sampled
-`SHA256SUMS.spot`, compresses with zstd and uploads the archive plus its
-checksum to Drive. Send recipients the resulting link and the sha256; they pass
-them to `-u` and `-c`.
+It stages each component's subtrees, writes `MANIFEST.txt` and a sampled
+`SHA256SUMS.spot`, compresses with zstd and uploads the archives plus their
+checksums to Drive.
+
+For **qcom**, send recipients the link and the sha256; they pass them to `-u`
+and `-c`. For **yocto** and **openwrt**, make the Drive files link-shareable and
+put the links and checksums into `container_docker_helper.sh` (`URL_yocto` /
+`URL_openwrt` near the top) — recipients then need to be told nothing.
+
+The yocto tree is usually not under `/pkg` on the packing host, so point at it
+explicitly:
+
+```bash
+./pack-bundle.sh --component yocto --version 1.1.0 \
+    --map downloads=/srv/yocto/downloads \
+    --map llvm-arm-toolchain-ship=/srv/yocto/llvm-arm-toolchain-ship
+```
 
 Staging needs ~50 GB. It defaults to a directory beside the output rather than
 `/tmp`, which is often a tmpfs far smaller than the bundle.
 
-**Never commit the bundle link.** It points at Qualcomm proprietary toolchains,
+**Never commit the qcom link.** It points at Qualcomm proprietary toolchains,
 and the repository holding these scripts is public. The image itself carries
-nothing licensed, which is exactly why it can be published openly while the
-bundle cannot.
+nothing licensed, which is exactly why it can be published openly while that
+bundle cannot. The yocto and openwrt bundles are a different matter: they are
+caches built from public sources, so their links are committed on purpose.
 
 ### Publishing a new base image
 
