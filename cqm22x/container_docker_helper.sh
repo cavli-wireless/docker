@@ -302,7 +302,10 @@ for _spec in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
         || die "-m $_spec: mode must be ro or rw, got '$_mode'"
 
     [[ -e "$_host" ]] || die "-m $_spec: $_host does not exist on this machine"
-    _host="$(cd "$(dirname "$_host")" && printf '%s/%s' "$(pwd -P)" "$(basename "$_host")")"
+    # dirname of a top-level path is "/", so join by hand and squeeze the
+    # separator — otherwise "-m /mnt" resolves to "//mnt".
+    _hdir="$(cd "$(dirname "$_host")" && pwd -P)"
+    _host="${_hdir%/}/$(basename "$_host")"
     [[ -n "$_target" ]] || _target="$_host"
     [[ "$_target" == /* ]] || die "-m $_spec: the path inside must be absolute, got '$_target'"
     _target="${_target%/}"; [[ -n "$_target" ]] && : || _target=/
@@ -323,7 +326,7 @@ for _spec in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
     EXTRA_MOUNT_ARGS+=( -v "$_host:$_target:$_mode" )
     EXTRA_MOUNT_SHOW+=( "$_host -> $_target ($_mode)" )
 done
-unset _spec _host _f2 _f3 _rest _target _mode __seen_targets
+unset _spec _host _hdir _f2 _f3 _rest _target _mode __seen_targets
 
 # Each component unpacks into its own versioned directory, so a toolchain
 # update to one does not disturb the others and several versions can sit side
