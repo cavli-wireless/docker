@@ -155,7 +155,8 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211` |
 | `-V VER` | which bundle version to use (default `1.1.0`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
-| `-R` | rebuild the container from scratch |
+| `-R`, `--force` | rebuild the container from scratch |
+| `--force-all` | rebuild it *and* re-download the bundles (`-R -F`) |
 | `-d` | dry run: print what would happen, change nothing |
 | `-h` | full list |
 
@@ -512,7 +513,7 @@ The container holds no state — the toolchain, source and every cache are bind
 mounts from the host. Throwing it away costs nothing:
 
 ```bash
-bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/qcom/1.1.0 -P -R
+bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/qcom/1.1.0 -P --force
 ```
 
 ---
