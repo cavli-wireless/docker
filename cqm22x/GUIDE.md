@@ -154,6 +154,7 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-c HEX` | expected sha256 of the qcom bundle |
 | `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211` |
 | `-V VER` | which bundle version to use (default `1.1.0`) |
+| `-m PATH` | mount an extra host path into every container, repeatable: `PATH`, `PATH:ro`, `PATH:/inside`, `PATH:/inside:ro` (long form `--mount`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
 | `-R`, `--force` | rebuild the container from scratch |
 | `--force-all` | rebuild it *and* re-download the bundles (`-R -F`) |
@@ -161,6 +162,42 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-h` | full list |
 
 `-h` is the authority; the table above is the short version.
+
+### Mounting another disk with `-m`
+
+`/work` is one path. When the sources you need are spread over more than one
+disk — a second SSD, a shared release drop, a checkout that lives outside
+`-w` — add them with `-m`:
+
+```bash
+bash container_docker_helper.sh -w /mnt/ -m /mnt/SSD_2TB -m /srv/release:ro
+```
+
+With no path after it the disk appears inside at the same path it has on the
+host, which is what you usually want: paths in build scripts and error
+messages then mean the same thing on both sides. Four spellings:
+
+| spec | inside the container |
+|---|---|
+| `/mnt/SSD_2TB` | `/mnt/SSD_2TB`, writable |
+| `/mnt/SSD_2TB:ro` | `/mnt/SSD_2TB`, read-only |
+| `/mnt/SSD_2TB:/data` | `/data`, writable |
+| `/mnt/SSD_2TB:/data:ro` | `/data`, read-only |
+
+Repeat `-m` for each one. The path has to exist on the host — a typo fails
+before anything is downloaded rather than becoming an empty directory inside.
+
+`/pkg`, `/work` and `/ccache` belong to this script; `-m` will not overwrite
+them. And because Docker fixes a container's mounts when it is created,
+adding `-m` to a container that already exists does nothing until you
+recreate it:
+
+```bash
+bash container_docker_helper.sh -w /mnt/ -t ~/cqm22x/qcom/1.1.0 -P \
+  -m /mnt/SSD_2TB --force
+```
+
+The script warns when you hit this rather than leaving you to wonder.
 
 ### `-w` and `-r` are different, and it matters
 
