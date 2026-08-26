@@ -68,7 +68,8 @@ container_docker_helper.sh [options]
   -P: do not pull the image; use the local copy
   -D: do not install Docker; fail if it is missing
   -U: do not pass USB through (build only, no flashing)
-  -R: replace existing containers
+  -R, --force: replace existing containers (recreate them from scratch)
+      --force-all also re-downloads the bundles (same as -R -F)
   -n: fetch and unpack the bundles only; do not create containers
 
 BUNDLES
@@ -99,6 +100,9 @@ EXAMPLES
 
   # the qcom archive is already here
   bash container_docker_helper.sh -w /mnt/ -f ~/cqm22x-qcom-1.1.0.tar.zst
+
+  # recreate the containers from scratch, keeping the bundles already on disk
+  bash container_docker_helper.sh -w /mnt/ -p all --force -P
 
   # only fetch and unpack, do not create containers
   bash container_docker_helper.sh -p all -u '<link>' -c <sha256> -n
@@ -171,6 +175,21 @@ ENABLE_USB=yes
 RECREATE=no
 FETCH_ONLY=no
 DRYRUNCMD=""
+
+# getopts only speaks short options, but -R is the flag people reach for by
+# hand and "--force" is what they type. Translate the long spellings first.
+LONGARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --force)      LONGARGS+=(-R);;
+        --force-all)  LONGARGS+=(-R -F);;
+        --dry-run)    LONGARGS+=(-d);;
+        --help)       LONGARGS+=(-h);;
+        --*) echo "unknown option: $arg" >&2; print_usage; exit 1;;
+        *) LONGARGS+=("$arg");;
+    esac
+done
+set -- ${LONGARGS[@]+"${LONGARGS[@]}"}
 
 while getopts "hdw:u:c:t:f:r:p:V:kFPDURn" flag; do
   case $flag in
@@ -637,7 +656,7 @@ create_container() {
 
     if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
         if [ "$RECREATE" != yes ]; then
-            log "container $container already exists — reusing it (-R to rebuild)"
+            log "container $container already exists — reusing it (--force to recreate)"
             [ -n "$DRYRUNCMD" ] || docker start "$container" >/dev/null
             return
         fi
