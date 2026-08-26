@@ -63,6 +63,13 @@ container_docker_helper.sh [options]
       (default $HOME/cqm22x)
   -V: bundle version                         (default 1.1.0)
       Several versions can live side by side under -r; this picks one.
+  -m, --mount: mount an extra host path into every container. Repeatable.
+        HOST                 mounted at the same path inside, writable
+        HOST:ro              same path inside, read-only
+        HOST:/inside         chosen path inside, writable
+        HOST:/inside:ro      chosen path inside, read-only
+      The container's own paths (/work, /ccache, /pkg and everything the
+      bundles provide) are managed by this script and cannot be overridden.
   -k: keep downloaded archives after unpacking
   -F: re-download even if a bundle is already installed
   -P: do not pull the image; use the local copy
@@ -103,6 +110,9 @@ EXAMPLES
 
   # recreate the containers from scratch, keeping the bundles already on disk
   bash container_docker_helper.sh -w /mnt/ -p all --force -P
+
+  # a second disk of sources and a shared release drop, both visible inside
+  bash container_docker_helper.sh -w /mnt/ -m /mnt/SSD_2TB -m /srv/release:ro
 
   # only fetch and unpack, do not create containers
   bash container_docker_helper.sh -p all -u '<link>' -c <sha256> -n
@@ -169,6 +179,7 @@ URL_openwrt="${CQM_OPENWRT_URL:-https://drive.google.com/file/d/1sPOzmaDvJBZ4rAS
 SHA_openwrt="${CQM_OPENWRT_SHA256:-cdf8f8e3ece1619a32e8ae948f0aee2f5eecf0467b65d5590026c5d235384405}"
 KEEP_ARCHIVE=no
 FORCE_FETCH=no
+EXTRA_MOUNTS=()
 SKIP_PULL=no
 INSTALL_DOCKER=yes
 ENABLE_USB=yes
@@ -184,6 +195,8 @@ for arg in "$@"; do
         --force)      LONGARGS+=(-R);;
         --force-all)  LONGARGS+=(-R -F);;
         --dry-run)    LONGARGS+=(-d);;
+        --mount)      LONGARGS+=(-m);;
+        --mount=*)    LONGARGS+=(-m "${arg#*=}");;
         --help)       LONGARGS+=(-h);;
         --*) echo "unknown option: $arg" >&2; print_usage; exit 1;;
         *) LONGARGS+=("$arg");;
@@ -191,7 +204,7 @@ for arg in "$@"; do
 done
 set -- ${LONGARGS[@]+"${LONGARGS[@]}"}
 
-while getopts "hdw:u:c:t:f:r:p:V:kFPDURn" flag; do
+while getopts "hdw:u:c:t:f:r:p:V:m:kFPDURn" flag; do
   case $flag in
     d) DRYRUNCMD="echo";;
     w) WORK_PATH=$OPTARG;;
@@ -202,6 +215,7 @@ while getopts "hdw:u:c:t:f:r:p:V:kFPDURn" flag; do
     r) CQM_ROOT=$OPTARG;;
     p) PRODUCTS_ARG=$OPTARG;;
     V) BUNDLE_VERSION=$OPTARG;;
+    m) EXTRA_MOUNTS+=("$OPTARG");;
     k) KEEP_ARCHIVE=yes;;
     F) FORCE_FETCH=yes;;
     P) SKIP_PULL=yes;;
@@ -258,6 +272,58 @@ NEEDED_COMPONENTS="$(printf '%s' "$NEEDED_COMPONENTS" | sed 's/^ *//')"
 CACHE_ROOT="$CQM_ROOT/cache"
 IMAGE="$DOCKER_IMG:$DOCKER_IMG_TAG"
 [[ -n "$WORK_PATH" ]] || WORK_PATH="$CQM_ROOT/workspace"
+
+# -m/--mount: extra host paths the caller wants visible inside every
+# container. Resolved and validated once here rather than per product, so a
+# typo fails before anything is downloaded or created.
+#
+# Everything under /pkg, plus /work and /ccache, is this script's own layout —
+# the doctor asserts what lives there and the bundles fill it in. Letting an
+# extra mount land on one of those would produce a container that passes
+# creation and then fails a build for no visible reason, so it is refused.
+EXTRA_MOUNT_ARGS=()
+EXTRA_MOUNT_SHOW=()
+__seen_targets=""
+for _spec in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
+    IFS=':' read -r _host _f2 _f3 _rest <<<"$_spec"
+    [[ -n "$_host" ]]  || die "-m: empty mount spec"
+    [[ -z "${_rest:-}" ]] || die "-m $_spec: too many ':' separated fields"
+
+    # A container path is always absolute, so a second field that is not one
+    # can only be the mode. That makes the common 'HOST:ro' work.
+    if [[ -z "${_f2:-}" ]]; then
+        _target=""; _mode=rw
+    elif [[ "$_f2" == ro || "$_f2" == rw ]]; then
+        _target=""; _mode="$_f2"
+    else
+        _target="$_f2"; _mode="${_f3:-rw}"
+    fi
+    [[ "$_mode" == ro || "$_mode" == rw ]] \
+        || die "-m $_spec: mode must be ro or rw, got '$_mode'"
+
+    [[ -e "$_host" ]] || die "-m $_spec: $_host does not exist on this machine"
+    _host="$(cd "$(dirname "$_host")" && printf '%s/%s' "$(pwd -P)" "$(basename "$_host")")"
+    [[ -n "$_target" ]] || _target="$_host"
+    [[ "$_target" == /* ]] || die "-m $_spec: the path inside must be absolute, got '$_target'"
+    _target="${_target%/}"; [[ -n "$_target" ]] && : || _target=/
+
+    case "$_target" in
+        /|/pkg|/work|/ccache|/etc|/usr|/bin|/sbin|/lib|/lib64|/dev|/proc|/sys)
+            die "-m $_spec: $_target is managed by this script and cannot be replaced";;
+        /pkg/*)
+            die "-m $_spec: everything under /pkg comes from the bundles; mount it somewhere else";;
+        /home/*)
+            warn "-m $_spec: $_target is inside the container user's home, which the entrypoint creates at start — mount elsewhere if it comes up empty";;
+    esac
+    case " $__seen_targets " in
+        *" $_target "*) die "-m $_spec: $_target is already used by another -m";;
+    esac
+    __seen_targets="$__seen_targets $_target"
+
+    EXTRA_MOUNT_ARGS+=( -v "$_host:$_target:$_mode" )
+    EXTRA_MOUNT_SHOW+=( "$_host -> $_target ($_mode)" )
+done
+unset _spec _host _f2 _f3 _rest _target _mode __seen_targets
 
 # Each component unpacks into its own versioned directory, so a toolchain
 # update to one does not disturb the others and several versions can sit side
@@ -657,6 +723,10 @@ create_container() {
     if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
         if [ "$RECREATE" != yes ]; then
             log "container $container already exists — reusing it (--force to recreate)"
+            # Mounts are fixed when a container is created, so -m on a re-run
+            # of an existing container silently does nothing. Say so.
+            [ ${#EXTRA_MOUNT_ARGS[@]} -eq 0 ] \
+                || warn "-m has no effect on an existing container: rerun with --force to apply it to $container"
             [ -n "$DRYRUNCMD" ] || docker start "$container" >/dev/null
             return
         fi
@@ -747,6 +817,8 @@ create_container() {
     fi
 
     [ -d "$HOME/.ssh" ] && args+=( -v "$HOME/.ssh:/home/$__USERNAME/.ssh:ro" )
+
+    args+=( ${EXTRA_MOUNT_ARGS[@]+"${EXTRA_MOUNT_ARGS[@]}"} )
 
     if [ "$ENABLE_USB" = yes ]; then
         # Enough access to drive EDL/QDL and the DIAG serial port without
@@ -858,6 +930,7 @@ main() {
   Work path : $WORK_PATH  ->  /work
   Bundles   : $(for c in $NEEDED_COMPONENTS; do printf '%s ' "$(comp_dir "$c")"; done)
   USB       : $([ "$ENABLE_USB" = yes ] && echo "passed through, flashing available" || echo "disabled")
+$([ ${#EXTRA_MOUNT_SHOW[@]} -eq 0 ] || printf '  Extra     : %s\n' "${EXTRA_MOUNT_SHOW[@]}")
 
 Let start it
 EOF
