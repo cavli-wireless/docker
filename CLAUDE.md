@@ -126,6 +126,8 @@ the opt-out: it builds a local derived image `cqm22x-buildenv:<user>` with the
 caller's user baked in as `USER`, so `exec` lands as them too. It is a thin
 layer on the pulled image (never published) — the one-image design still holds.
 
+`-p sdk` creates `build_cqm22x_jammy_<user>_sdk` with the openwrt bundle only (no qcom, no `-u`), for customers building packages against the Cavli SDK tarball; `doctor.sh` knows it via `CQM_PRODUCT=sdk` and skips the qcom/dtc checks. The helper runs the repo's `doctor.sh` inside the container (not the image's `cqm-doctor`) so an older pulled image still verifies. `-w` must be a directory the user owns: `/work` not writable is a doctor FAIL.
+
 ### Container layout
 
 Nothing large lives in the container — toolchains, source and every cache are

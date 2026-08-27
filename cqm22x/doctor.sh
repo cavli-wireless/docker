@@ -59,8 +59,12 @@ if [[ -z "$PRODUCT" ]]; then
     if [[ -d /pkg/yocto/llvm-arm-toolchain-ship ]]; then PRODUCT=cqm211
     else PRODUCT=cqm220-3; fi
 fi
+# sdk = application-SDK container: OpenWrt packages only, no kernel, no abl
+# signing, so the qcom bundle (and its dtc) is not expected there.
+WANT_QCOM=yes
 case "$PRODUCT" in
     cqm211) WANT_YOCTO=yes; WANT_OPENWRT=no;;
+    sdk)    WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
     *)      WANT_YOCTO=no;  WANT_OPENWRT=yes;;
 esac
 
@@ -95,7 +99,9 @@ check "LANG"     "$EXPECT_LANG" "${LANG:-unset}"
 echo
 echo "device tree compiler"
 dtc_bin=/pkg/qct/software/boottools/dtc
-if [[ -x "$dtc_bin" ]]; then
+if [[ "$WANT_QCOM" == no ]]; then
+    note "dtc" "not needed for sdk (qcom bundle not mounted)"
+elif [[ -x "$dtc_bin" ]]; then
     check "dtc version" "$EXPECT_DTC_VERSION" "$("$dtc_bin" --version 2>&1 | head -1 | sed 's/^Version: //')"
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
     cat > "$tmp/ref.dts" <<'DTS'
@@ -133,9 +139,13 @@ else
     bad "dtc" "$dtc_bin executable" "missing"
 fi
 
-# ---- 4. qcom bundle — needed by every product ------------------------------
+# ---- 4. qcom bundle — needed by every product except sdk ------------------
 echo
 echo "qcom bundle (/pkg)"
+if [[ "$WANT_QCOM" == no ]]; then
+    note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
+fi
+if [[ "$WANT_QCOM" == yes ]]; then
 for p in /pkg/qct/software/HEXAGON_Tools /pkg/qct/software/llvm/release/arm \
          /pkg/qct/software/arm/linaro-toolchain /pkg/sectools/v2/latest/Linux \
          /pkg/prebuilts/clang; do
@@ -174,6 +184,7 @@ if (( ${#rw_mounts[@]} == 0 )); then
 else
     note "bundle mount" "writable: ${rw_mounts[*]} — a build could mutate the shared toolchain"
 fi
+fi  # WANT_QCOM
 
 # ---- 5. the product's own bundle ------------------------------------------
 # Only one of these is mounted, and which one is the whole reason the toolchain

@@ -72,6 +72,16 @@ minutes on a first run, almost all of it download and unpack.
 So an sdx35 machine downloads about 15 GB and an sdx61 machine about 37 GB. Ask
 for both and the shared `qcom` bundle is still fetched only once.
 
+An application developer who only builds packages against the Cavli SDK
+tarball needs none of the Qualcomm material: `-p sdk` creates
+`build_cqm22x_jammy_<user>_sdk` with the `openwrt` bundle alone (~2.3 GB
+download, no `-u`). What it can do is exactly what the SDK contains — OpenWrt
+packages (`.ipk`) — not kernel, abl, modem or flashable images.
+
+```bash
+bash container_docker_helper.sh -p sdk -l -w ~/cqm-sdk
+```
+
 Only `qcom` is proprietary, which is why it is the only one you have to be given
 a link for. The other two are build caches assembled from public sources — they
 exist to make the first build fast, not to supply anything that could not be
@@ -153,6 +163,7 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-u URL` | qcom bundle link (Google Drive or plain HTTPS) |
 | `-c HEX` | expected sha256 of the qcom bundle |
 | `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211` |
+| `-p sdk` | application-SDK container: openwrt bundle only, no qcom bundle and no `-u`. For building packages against the Cavli SDK tarball (`sdk-*.tar.gz` from a release); cannot build kernel, abl, modem or images. Not part of `all` |
 | `-V VER` | which bundle version to use (default `1.1.0`) |
 | `-m PATH` | mount an extra host path into every container, repeatable: `PATH`, `PATH:ro`, `PATH:/inside`, `PATH:/inside:ro` (long form `--mount`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
