@@ -49,6 +49,8 @@ container_docker_helper.sh [options]
   -d: dry run: print what will be done
   -w: working path for sources, mounted at /work
   -p: product list, comma separated, or 'all'  (default cqm220-3)
+      'sdk' = application SDK container: openwrt bundle only, no qcom
+      bundle, no -u needed (builds packages against the Cavli SDK tarball)
         cqm220-3   sdx35, OpenWrt userspace
         cqm220-0   sdx32, OpenWrt userspace
         cqm211     sdx61/62/65, Yocto userspace
@@ -152,12 +154,18 @@ LOCAL_USER_IMAGE=no
 # Everything needs qcom; the second component is what differs, and it is the
 # reason the toolchain is not one archive any more.
 # ---------------------------------------------------------------------------
+#
+# 'sdk' is not a product: it is the application-SDK container for customers,
+# who build packages against the Cavli SDK tarball (apps only, no kernel, no
+# abl signing) and therefore need only the openwrt bundle. It is never part
+# of 'all'.
 ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211"
 components_for() {
     case "$1" in
         cqm220-0|cqm220-3) echo "qcom openwrt";;
         cqm211)            echo "qcom yocto";;
-        *) die "unknown product: $1 (expected one of: $ALL_PRODUCTS)";;
+        sdk)               echo "openwrt";;
+        *) die "unknown product: $1 (expected one of: $ALL_PRODUCTS sdk)";;
     esac
 }
 
@@ -813,15 +821,19 @@ create_container() {
     fi
 
     local qcom_dir openwrt_dir yocto_dir
-    qcom_dir="$(comp_dir qcom)"
 
     # Validate every bind source up front. Docker silently creates an empty
     # directory for a missing one, which turns a clear setup error into a
     # confusing "toolchain not found" halfway through a build.
     local missing=() pth
-    for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
-        [ -e "$qcom_dir/$pth" ] || missing+=("qcom:$pth")
-    done
+    case " $comps " in
+        *" qcom "*)
+            qcom_dir="$(comp_dir qcom)"
+            for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
+                [ -e "$qcom_dir/$pth" ] || missing+=("qcom:$pth")
+            done
+            ;;
+    esac
     case " $comps " in
         *" openwrt "*)
             openwrt_dir="$(comp_dir openwrt)"
@@ -859,18 +871,22 @@ create_container() {
         -e "CQM_UID=$__UID" -e "CQM_GID=$__GID" -e "CQM_USER=$__USERNAME"
         -e "CQM_PRODUCT=$product"
         --add-host "${DOCKER_PRV_NAME}:127.0.0.1"
-        -v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
-        -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
-        -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
-        -v "$qcom_dir/sectools:/pkg/sectools:ro"
-        -v "$qcom_dir/prebuilts:/pkg/prebuilts:ro"
         -v "$CACHE_ROOT/$product/openwrt:/pkg/openwrt"
         -v "$CACHE_ROOT/$product/ccache:/ccache"
         -v "$WORK_PATH:/work"
         -v /etc/localtime:/etc/localtime:ro
     )
-    [ -f "$qcom_dir/BUNDLE_VERSION" ]  && args+=( -v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
-    [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
+    if [ -n "${qcom_dir:-}" ]; then
+        args+=(
+            -v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
+            -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
+            -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
+            -v "$qcom_dir/sectools:/pkg/sectools:ro"
+            -v "$qcom_dir/prebuilts:/pkg/prebuilts:ro"
+        )
+        [ -f "$qcom_dir/BUNDLE_VERSION" ]  && args+=( -v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
+        [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
+    fi
 
     # OpenWrt's own prebuilt tool/toolchain cache. set_openwrt_env.sh finds it
     # here by default and restores it automatically on the first app build,
@@ -929,10 +945,19 @@ verify_container() {
     # identity explicitly. -it only when there is a real terminal.
     local tty=()
     [ -t 0 ] && [ -t 1 ] && tty=(-i -t)
-    docker exec "${tty[@]}" -u "$__UID:$__GID" \
-        -e "HOME=/home/$__USERNAME" -e "USER=$__USERNAME" \
-        "$container" cqm-doctor \
-        || die "the environment check failed — see above. Builds from this container would not match CI."
+    # The doctor next to this script is the one baked into the image as
+    # cqm-doctor; running this copy keeps helper and check at one revision
+    # even when the pulled image is older (e.g. it predates the sdk mode).
+    local doctor="$(dirname "$0")/doctor.sh"
+    if [ -r "$doctor" ]; then
+        docker exec -i -u "$__UID:$__GID" \
+            -e "HOME=/home/$__USERNAME" -e "USER=$__USERNAME" \
+            "$container" bash -s < "$doctor"
+    else
+        docker exec "${tty[@]}" -u "$__UID:$__GID" \
+            -e "HOME=/home/$__USERNAME" -e "USER=$__USERNAME" \
+            "$container" cqm-doctor
+    fi || die "the environment check failed — see above. Builds from this container would not match CI."
 }
 
 # ===========================================================================

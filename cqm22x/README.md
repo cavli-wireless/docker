@@ -45,6 +45,14 @@ bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c '<sha
 bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c '<sha256>'
 ```
 
+Application developers who only build packages against the Cavli SDK tarball
+do not need the qcom bundle at all:
+
+```bash
+# SDK only: openwrt bundle, no -u, container build_cqm22x_jammy_<user>_sdk
+bash container_docker_helper.sh -p sdk -l -w ~/cqm-sdk
+```
+
 Other ways to supply the qcom bundle:
 
 ```bash
