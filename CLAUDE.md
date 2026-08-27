@@ -74,7 +74,7 @@ bash normal_docker_helper.sh -w <src> -t <tools>   # render Dockerfile.template 
 
 | | Contents | Needed by | Distribution |
 |---|---|---|---|
-| Base image | Ubuntu 22.04, Python 3.6/3.8/3.10, gcc-10, repo, dtc, rclone (~2.4 GB) | everything | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
+| Base image | Ubuntu 22.04, Python 2.7/3.6/3.8/3.10, gcc-10, repo, dtc, rclone, bitbake host tools (~2.4 GB) | everything | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
 | `qcom` bundle | HEXAGON, LLVM, linaro, sectools, prebuilts (~13 GB packed, ~60 GB unpacked) | every product | out of band, mounted read-only |
 | `yocto` bundle | bitbake `DL_DIR` cache + `llvm-arm-toolchain-ship` (~24 GB packed) | `cqm211` | link committed in the setup script |
 | `openwrt` bundle | `openwrt-prebuilt-backup` (~2.3 GB packed) | `cqm220-0/3` | link committed in the setup script |

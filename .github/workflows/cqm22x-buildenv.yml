@@ -97,11 +97,13 @@ jobs:
             pyver() { "$1" -c "import platform;print(platform.python_version())" 2>/dev/null || echo missing; }
             check "python3"   3.8.12          "$(pyver python3)"
             check "python"    3.8.12          "$(pyver python)"
+            check "python2.7" 2.7.18          "$(pyver python2.7)"
             check "python3.6" 3.6.9           "$(pyver python3.6)"
             check "python3.8" 3.8.12          "$(pyver python3.8)"
             check "gcc"       10.5.0          "$(gcc -dumpfullversion)"
             check "LANG"      en_US.UTF-8     "$LANG"
             check "/bin/sh"   bash            "$(basename "$(readlink -f /bin/sh)")"
+            for t in chrpath cpio diffstat; do command -v $t >/dev/null && printf "  PASS  %-22s\n" "$t" || { printf "  FAIL  %-22s missing\n" "$t"; fail=1; }; done
             python3 -c "import ctypes" && printf "  PASS  %-22s\n" "python3 _ctypes" || { printf "  FAIL  python3 _ctypes\n"; fail=1; }
             check "kernel/prebuilts"  /pkg/prebuilts  "$(readlink -f /pkg/kernel/prebuilts)"
             exit $fail
