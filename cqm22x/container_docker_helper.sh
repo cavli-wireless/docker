@@ -75,6 +75,9 @@ container_docker_helper.sh [options]
   -P: do not pull the image; use the local copy
   -D: do not install Docker; fail if it is missing
   -U: do not pass USB through (build only, no flashing)
+  -l: bake your user into a local image (cqm22x-buildenv:<user>) so that
+      `docker exec` lands as you too, not only `docker start -i`. The image
+      is derived from the pulled one on this machine and never published.
   -R, --force: replace existing containers (recreate them from scratch)
       --force-all also re-downloads the bundles (same as -R -F)
   -n: fetch and unpack the bundles only; do not create containers
@@ -138,6 +141,7 @@ PKG_SHA256=""
 TOOL_PATH=""
 FILE_TOOL_PATH=""
 PRODUCTS_ARG=cqm220-3
+LOCAL_USER_IMAGE=no
 
 # ---------------------------------------------------------------------------
 # Which bundle each product needs.
@@ -211,7 +215,7 @@ for arg in "$@"; do
 done
 set -- ${LONGARGS[@]+"${LONGARGS[@]}"}
 
-while getopts "hdw:u:c:t:f:r:p:V:m:kFPDURn" flag; do
+while getopts "hdw:u:c:t:f:r:p:V:m:kFPDURnl" flag; do
   case $flag in
     d) DRYRUNCMD="echo";;
     w) WORK_PATH=$OPTARG;;
@@ -230,6 +234,7 @@ while getopts "hdw:u:c:t:f:r:p:V:m:kFPDURn" flag; do
     U) ENABLE_USB=no;;
     R) RECREATE=yes;;
     n) FETCH_ONLY=yes;;
+    l) LOCAL_USER_IMAGE=yes;;
     h) print_usage; exit 0;;
     *) print_usage; exit 1;;
   esac
@@ -709,6 +714,54 @@ acquire_all() {
 # ===========================================================================
 # Image and container
 # ===========================================================================
+# Host GIDs that own USB/serial device nodes; joined inside the container so
+# flashing works without --privileged.
+host_usb_gids() {
+    local gids="" g gid
+    for g in plugdev dialout uucp; do
+        gid="$(getent group "$g" 2>/dev/null | cut -d: -f3)"
+        [ -n "$gid" ] && gids="${gids:+$gids,}$gid"
+    done
+    printf '%s' "$gids"
+}
+
+# -l: a thin local layer on top of the pulled image that creates the caller's
+# user and sets it as the image USER. entrypoint.sh then sees a non-root uid
+# and just execs, and `docker exec` (which skips the entrypoint) lands as the
+# same user. Everything else -- toolchain, pins, doctor -- is the pulled image
+# untouched, which is why this is a derived tag and not a rebuild.
+build_user_image() {
+    local base="$IMAGE" tag="cqm22x-buildenv:$__USERNAME" gids
+    gids="$([ "$ENABLE_USB" = yes ] && host_usb_gids || true)"
+    IMAGE="$tag"
+    if [ -n "$DRYRUNCMD" ]; then
+        echo "+ docker build -t $tag (FROM $base, USER $__USERNAME $__UID:$__GID, groups ${gids:-none})"
+        return
+    fi
+    log "building $tag for $__USERNAME ($__UID:$__GID) on top of $base"
+    docker build -q -t "$tag" \
+        --build-arg BASE="$base" --build-arg UID="$__UID" --build-arg GID="$__GID" \
+        --build-arg USERNAME="$__USERNAME" --build-arg GROUPS="$gids" - >/dev/null <<'DOCKERFILE' \
+        || die "building $tag failed"
+ARG BASE
+FROM $BASE
+ARG UID GID USERNAME GROUPS
+RUN set -e; \
+    getent group "$GID" >/dev/null || groupadd -g "$GID" "$USERNAME"; \
+    getent passwd "$UID" >/dev/null || useradd -u "$UID" -g "$GID" -m -s /bin/bash "$USERNAME"; \
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$USERNAME" > "/etc/sudoers.d/90-$USERNAME"; \
+    chmod 0440 "/etc/sudoers.d/90-$USERNAME"; \
+    for gid in $(printf '%s' "$GROUPS" | tr ',' ' '); do \
+        getent group "$gid" >/dev/null || groupadd -g "$gid" "hostgrp$gid"; \
+        usermod -aG "$(getent group "$gid" | cut -d: -f1)" "$USERNAME"; \
+    done; \
+    git config --system --add safe.directory '*'
+USER $USERNAME
+ENV HOME=/home/$USERNAME USER=$USERNAME LOGNAME=$USERNAME
+DOCKERFILE
+    ok "$tag ready"
+}
+
 pull_image() {
     if [ "$SKIP_PULL" = yes ]; then
         docker image inspect "$IMAGE" >/dev/null 2>&1 || die "-P was given but $IMAGE is not present locally"
@@ -743,6 +796,11 @@ create_container() {
     if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
         if [ "$RECREATE" != yes ]; then
             log "container $container already exists — reusing it (--force to recreate)"
+            # The image is fixed at creation too: -l on an existing container
+            # changes nothing until it is recreated.
+            local have; have="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null)"
+            [ -n "$have" ] && [ "$have" != "$IMAGE" ] \
+                && warn "$container runs $have, not $IMAGE — re-run with -R to recreate it"
             # Mounts are fixed when a container is created, so -m on a re-run
             # of an existing container silently does nothing. Say so.
             [ ${#EXTRA_MOUNT_ARGS[@]} -eq 0 ] \
@@ -850,11 +908,7 @@ create_container() {
             --device-cgroup-rule "c 189:* rmw"
             --device-cgroup-rule "c 188:* rmw"
         )
-        local gids="" g gid
-        for g in plugdev dialout uucp; do
-            gid="$(getent group "$g" 2>/dev/null | cut -d: -f3)"
-            [ -n "$gid" ] && gids="${gids:+$gids,}$gid"
-        done
+        local gids; gids="$(host_usb_gids)"
         [ -n "$gids" ] && args+=( -e "CQM_GROUPS=$gids" )
     fi
 
@@ -908,7 +962,7 @@ print_plan() {
         fi
     done
     printf '\n  source      %s  ->  /work\n' "$WORK_PATH"
-    printf '  image       %s\n' "$IMAGE"
+    printf '  image       %s\n' "$IMAGE$([ "$LOCAL_USER_IMAGE" = yes ] && echo " -> cqm22x-buildenv:$__USERNAME (-l: your user baked in)")"
     for c in $PRODUCTS; do
         printf '  container   %-38s (%s)\n' "$(container_for "$c")" "$(components_for "$c")"
         printf '  caches      %s\n' "$CACHE_ROOT/$c"
@@ -936,6 +990,7 @@ main() {
 
     acquire_all
     pull_image
+    [ "$LOCAL_USER_IMAGE" = yes ] && build_user_image
 
     local p
     for p in $PRODUCTS; do
@@ -950,6 +1005,7 @@ main() {
   Work path : $WORK_PATH  ->  /work
   Bundles   : $(for c in $NEEDED_COMPONENTS; do printf '%s ' "$(comp_dir "$c")"; done)
   USB       : $([ "$ENABLE_USB" = yes ] && echo "passed through, flashing available" || echo "disabled")
+  Image     : $IMAGE$([ "$LOCAL_USER_IMAGE" = yes ] && echo " (your user baked in: docker exec lands as $__USERNAME)")
 $([ ${#EXTRA_MOUNT_SHOW[@]} -eq 0 ] || printf '  Extra     : %s\n' "${EXTRA_MOUNT_SHOW[@]}")
 
 Let start it
