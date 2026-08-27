@@ -14,6 +14,7 @@ set -uo pipefail
 # ---- pinned contract -------------------------------------------------------
 EXPECT_PYTHON3=3.8.12
 EXPECT_PYTHON=3.8.12
+EXPECT_PY27=2.7.18
 EXPECT_PY36=3.6.9
 EXPECT_PY38=3.8.12
 EXPECT_PY310_MAJOR=3.10
@@ -81,6 +82,7 @@ echo
 echo "interpreters"
 check "python3 default"  "$EXPECT_PYTHON3"    "$(pyver python3)"
 check "python default"   "$EXPECT_PYTHON"     "$(pyver python)"
+check "python2.7"        "$EXPECT_PY27"       "$(pyver python2.7)"
 check "python3.6"        "$EXPECT_PY36"       "$(pyver python3.6)"
 check "python3.8"        "$EXPECT_PY38"       "$(pyver python3.8)"
 p310="$(pyver python3.10)"
@@ -94,6 +96,10 @@ check "gcc"  "$EXPECT_GCC" "$(gcc -dumpfullversion 2>/dev/null || echo missing)"
 check "g++"  "$EXPECT_GCC" "$(g++ -dumpfullversion 2>/dev/null || echo missing)"
 check "/bin/sh"  "$EXPECT_SH" "$(basename "$(readlink -f /bin/sh 2>/dev/null || echo missing)")"
 check "LANG"     "$EXPECT_LANG" "${LANG:-unset}"
+# bitbake HOSTTOOLS (cqm211) — missing ones stop the yocto build before it starts
+for t in chrpath cpio diffstat; do
+    if command -v "$t" >/dev/null 2>&1; then ok "host tool" "$t"; else bad "host tool" "$t" "missing"; fi
+done
 
 # ---- 3. dtc: version and, more importantly, output ------------------------
 echo
