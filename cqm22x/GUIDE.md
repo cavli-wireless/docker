@@ -156,6 +156,7 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-V VER` | which bundle version to use (default `1.1.0`) |
 | `-m PATH` | mount an extra host path into every container, repeatable: `PATH`, `PATH:ro`, `PATH:/inside`, `PATH:/inside:ro` (long form `--mount`) |
 | `-U` | no USB passthrough — use on a machine that only builds |
+| `-l` | bake your user into a local `cqm22x-buildenv:<user>` image so `docker exec -it <container> bash` lands as you (like `docker start -i` already does); add `-R` to recreate existing containers with it |
 | `-R`, `--force` | rebuild the container from scratch |
 | `--force-all` | rebuild it *and* re-download the bundles (`-R -F`) |
 | `-d` | dry run: print what would happen, change nothing |

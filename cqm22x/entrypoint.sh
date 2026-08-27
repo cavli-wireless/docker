@@ -17,8 +17,14 @@ CQM_GID="${CQM_GID:-1000}"
 CQM_USER="${CQM_USER:-builder}"
 CQM_GROUPS="${CQM_GROUPS:-}"   # extra host GIDs, comma separated (usb, dialout…)
 
+# Surface the read-only toolchain bundle version, if one is mounted.
+if [[ -r /pkg/BUNDLE_VERSION ]]; then
+    export CQM_BUNDLE_VERSION="$(cat /pkg/BUNDLE_VERSION)"
+fi
+
 if [[ "$(id -u)" -ne 0 ]]; then
-    # Already running as an explicit --user; nothing to set up.
+    # Already running as an explicit --user (or an image built with -l,
+    # which bakes the user in); nothing to set up.
     exec "$@"
 fi
 
@@ -57,11 +63,6 @@ git config --system --add safe.directory '*' 2>/dev/null || true
 for d in /ccache "$home"; do
     [[ -d "$d" ]] && chown "$CQM_UID:$CQM_GID" "$d" 2>/dev/null || true
 done
-
-# Surface the read-only toolchain bundle version, if one is mounted.
-if [[ -r /pkg/BUNDLE_VERSION ]]; then
-    export CQM_BUNDLE_VERSION="$(cat /pkg/BUNDLE_VERSION)"
-fi
 
 exec setpriv --reuid="$CQM_UID" --regid="$CQM_GID" --init-groups \
      env HOME="$home" USER="$CQM_USER" LOGNAME="$CQM_USER" \
