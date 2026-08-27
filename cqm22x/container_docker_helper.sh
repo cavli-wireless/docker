@@ -55,8 +55,8 @@ container_docker_helper.sh [options]
   -u: URL of the QCOM bundle — a Google Drive share link or any direct
       HTTPS URL. Cavli supplies this; it is the only bundle this script
       cannot fetch on its own.
-  -c: expected sha256 of the qcom bundle (strongly recommended; Cavli
-      publishes it alongside the link)
+  -c: expected sha256 of the qcom bundle. Optional: bundles Cavli has
+      shipped are verified against a built-in list; only a newer one needs it
   -t: path to an already-extracted qcom bundle; skips its download
   -f: path to an already-downloaded qcom .tar.zst; skips its download
   -r: root directory for the bundles and build caches
@@ -173,6 +173,13 @@ components_for() {
 # ---------------------------------------------------------------------------
 URL_qcom="${CQM_QCOM_URL:-}"
 SHA_qcom="${CQM_QCOM_SHA256:-}"
+# sha256 of every qcom bundle Cavli has shipped. A checksum reveals nothing
+# about where the archive lives, so it can sit here even though the link
+# cannot -- and it lets -u alone still verify the download (no -c needed).
+KNOWN_QCOM_SHA256="
+82240d421fae57e3028d6d2fcd0275591aa6b54849be8628fd18921a8a494038  cqm22x-pkg-1.0.1
+e89043ba92501e2400b87ea344c07368d7bb108f4bdc7cd71769b027dd1b5d8f  cqm22x-pkg-1.0.0
+"
 URL_yocto="${CQM_YOCTO_URL:-https://drive.google.com/file/d/1V5Mnrdh4dxf4-ribimCH6rktMU0CGOlx/view?usp=sharing}"
 SHA_yocto="${CQM_YOCTO_SHA256:-d32d303ebc47a1ce9fb6fb9a2494b3c9c16741d95502e28eb6b1132600ed7c06}"
 URL_openwrt="${CQM_OPENWRT_URL:-https://drive.google.com/file/d/1sPOzmaDvJBZ4rASOLVJphqs6u0FmY8MZ/view?usp=sharing}"
@@ -544,6 +551,16 @@ verify_archive() {
         fi
         [ -r "$sumfile" ] && want="$(awk '{print $1}' "$sumfile" | head -1)"
     fi
+    if [ -z "$want" ] && [ "${5:-}" = qcom ]; then
+        got="$(sha256sum "$archive" | cut -d' ' -f1)"
+        if grep -q "^$got " <<<"$KNOWN_QCOM_SHA256"; then
+            ok "checksum ok ($(grep "^$got " <<<"$KNOWN_QCOM_SHA256" | awk '{print $2}'))"
+            return 0
+        fi
+        die "checksum $got is not a qcom bundle this script knows.
+Either the download is corrupt/incomplete (re-run with -F) or this is a newer
+bundle: pass its sha256 with -c, or add it to KNOWN_QCOM_SHA256."
+    fi
     if [ -z "$want" ]; then
         warn "no checksum available — the archive was NOT verified.
 Pass -c <sha256> (Cavli publishes it with the link) so a truncated download is caught here."
@@ -671,7 +688,7 @@ Set CQM_$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')_URL to a mirror
         downloaded=yes
     fi
 
-    verify_archive "$archive" "$sumfile" "$sha" "$url"
+    verify_archive "$archive" "$sumfile" "$sha" "$url" "$component"
     extract_archive "$archive" "$dir" "$component"
     finalise_bundle "$dir" "$component"
 
