@@ -17,6 +17,8 @@
 
 FROM ubuntu:22.04@sha256:3b06811b2afd352be909dd088a004166d665dc76d38b13eada33522a9d915c6f
 
+ARG PYTHON27_VERSION=2.7.18
+ARG PYTHON27_SHA256=da3080e3b488f648a3d7a4560ddee895284c3380b11d6de75edb986526b9a814
 ARG PYTHON36_VERSION=3.6.9
 ARG PYTHON36_SHA256=47fc92a1dcb946b9ed0abc311d3767b7215c54e655b17fd1d3f9b538195525aa
 ARG PYTHON38_VERSION=3.8.12
@@ -40,9 +42,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 #    crash under gcc-11.
 #    libffi-dev MUST be present before Python is built from source, otherwise
 #    the resulting interpreter has no _ctypes module.
+#    chrpath cpio diffstat: bitbake HOSTTOOLS (cqm211/yocto) refuses to start
+#    without them.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bison boxes build-essential ca-certificates clang curl dh-autoreconf \
+        bison boxes build-essential ca-certificates chrpath clang cpio curl \
+        dh-autoreconf diffstat \
         file flex g++ g++-10 g++-multilib gawk gcc-10 gcc-multilib gettext git \
         git-lfs gnupg libcurl4-gnutls-dev libexpat1-dev libffi-dev libncurses5 \
         libncurses5-dev libssl-dev libxml-parser-perl libyaml-dev libz-dev \
@@ -77,12 +82,25 @@ RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 30 \
     && update-alternatives --set c++ /usr/bin/g++
 
 # ---------------------------------------------------------------------------
-# 4. Python 3.6 and 3.8 from source (3.10 comes from the distro).
+# 4. Python 2.7, 3.6 and 3.8 from source (3.10 comes from the distro).
 #    Each module of the firmware build pins its own interpreter:
-#      apps/openwrt -> 3.8, modem -> 3.8, meta -> 3.8, boot -> 3.10
+#      apps/openwrt -> 3.8, modem -> 3.8, meta -> 3.8, boot -> 3.10,
+#      ota (releasetools) -> 2.7
+#    2.7 is `make altinstall`: only python2.7 (+ python2 symlink), so the
+#    python/python3 alternatives below are untouched.
 #    The previous image wrote `make -j$(npoc)` — a typo that expanded to the
 #    empty string, so both interpreters were built single-threaded.
 # ---------------------------------------------------------------------------
+RUN cd /tmp \
+    && curl -fsSLO "https://www.python.org/ftp/python/${PYTHON27_VERSION}/Python-${PYTHON27_VERSION}.tgz" \
+    && echo "${PYTHON27_SHA256}  Python-${PYTHON27_VERSION}.tgz" | sha256sum -c - \
+    && tar -xf "Python-${PYTHON27_VERSION}.tgz" \
+    && cd "Python-${PYTHON27_VERSION}" \
+    && ./configure --prefix=/usr --with-ensurepip=no \
+    && make -j"$(nproc)" && make altinstall \
+    && ln -sf /usr/bin/python2.7 /usr/bin/python2 \
+    && cd /tmp && rm -rf "Python-${PYTHON27_VERSION}" "Python-${PYTHON27_VERSION}.tgz"
+
 RUN cd /tmp \
     && curl -fsSLO "https://www.python.org/ftp/python/${PYTHON36_VERSION}/Python-${PYTHON36_VERSION}.tgz" \
     && echo "${PYTHON36_SHA256}  Python-${PYTHON36_VERSION}.tgz" | sha256sum -c - \
