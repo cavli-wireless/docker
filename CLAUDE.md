@@ -121,7 +121,10 @@ cqm22x deliberately replaced.
 
 Note: `docker exec` bypasses the entrypoint, so anything invoked that way must
 pass `-u "$(id -u):$(id -g)"` and cannot rely on env the entrypoint exports
-(`cqmdev` and `doctor.sh` both handle this explicitly).
+(`cqmdev` and `doctor.sh` both handle this explicitly). `-l` on the helper is
+the opt-out: it builds a local derived image `cqm22x-buildenv:<user>` with the
+caller's user baked in as `USER`, so `exec` lands as them too. It is a thin
+layer on the pulled image (never published) — the one-image design still holds.
 
 ### Container layout
 
