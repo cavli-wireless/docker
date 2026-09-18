@@ -64,9 +64,14 @@ fi
 # signing, so the qcom bundle (and its dtc) is not expected there.
 WANT_QCOM=yes
 case "$PRODUCT" in
-    cqm211) WANT_YOCTO=yes; WANT_OPENWRT=no;;
-    sdk)    WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
-    *)      WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+    cqm211)                        WANT_YOCTO=yes; WANT_OPENWRT=no;;
+    sdk)                           WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
+    # cqm212 mounts its own (aarch64 gcc-13.3.0) cache at the very same
+    # /pkg/openwrt-prebuilt-backup path as cqm220-0/3's arm one, so the same
+    # check below covers both -- listed explicitly so a future product added
+    # to the wildcard arm below does not silently change cqm212's checks too.
+    cqm220-0|cqm220-3|cqm212)      WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+    *)                             WANT_YOCTO=no;  WANT_OPENWRT=yes;;
 esac
 
 echo
@@ -198,7 +203,7 @@ fi  # WANT_QCOM
 # container that is correctly set up for the other product line.
 if [[ "$WANT_OPENWRT" == yes ]]; then
     echo
-    echo "openwrt bundle (cqm220-0/3)"
+    echo "openwrt bundle ($PRODUCT)"
     if [[ -d /pkg/openwrt-prebuilt-backup ]]; then
         # Without this the first app build compiles gcc/binutils/musl from
         # source — hours instead of an extract. It is not fatal, so it warns.
