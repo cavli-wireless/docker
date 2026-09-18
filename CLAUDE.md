@@ -11,10 +11,11 @@ Docker image; "testing" means running the environment check inside a container.
 
 Two generations live here side by side and share nothing:
 
-- **`cqm22x/`** — the current design. One public image + three separately
+- **`cqm22x/`** — the current design. One public image + several separately
   distributed bundles, UID mapped at runtime, environment pinned and asserted.
-  Serves three product lines (`cqm220-3`/sdx35, `cqm220-0`/sdx32, `cqm211`/
-  sdx61-62-65). This is where active work happens.
+  Serves `cqm220-3`/sdx35, `cqm220-0`/sdx32, `cqm211`/sdx61-62-65, and
+  `cqm212`/sdx85 (Kobuk; not part of `-p all` yet — see the bundle table
+  below). This is where active work happens.
 - **`sdx/`, `sdx35/{18,20,22}.04/`, `c10qm/`, `cqs290/`, `le/22.04/`,
   `common/`** — the legacy pattern, kept working and deliberately untouched.
   `cqm22x/container_docker_helper.sh` aborts rather than reuse their image
@@ -46,7 +47,7 @@ docker build -t cqm22x-buildenv:dev cqm22x/
 ./cqm22x/cqmdev sync | shell | build -m all -t MBB-CAV -v debug | status
 ./cqm22x/cqmdev -p cqm220-0 shell        # the second product
 
-# Cavli side: publish bundles (qcom | yocto | openwrt | all)
+# Cavli side: publish bundles (qcom | yocto | openwrt | openwrt212 | all -- all excludes openwrt212)
 ./cqm22x/pack-bundle.sh --component all --version 1.1.0 --source /pkg --upload
 ```
 
@@ -77,20 +78,27 @@ bash normal_docker_helper.sh -w <src> -t <tools>   # render Dockerfile.template 
 | Base image | Ubuntu 22.04, Python 2.7/3.6/3.8/3.10, gcc-10, repo, dtc, rclone, bitbake host tools (~2.4 GB) | everything | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
 | `qcom` bundle | HEXAGON, LLVM, linaro, sectools, prebuilts (~13 GB packed, ~60 GB unpacked) | every product | out of band, mounted read-only |
 | `yocto` bundle | bitbake `DL_DIR` cache + `llvm-arm-toolchain-ship` (~24 GB packed) | `cqm211` | link committed in the setup script |
-| `openwrt` bundle | `openwrt-prebuilt-backup` (~2.3 GB packed) | `cqm220-0/3` | link committed in the setup script |
+| `openwrt` bundle | `openwrt-prebuilt-backup`, arm gcc-11.2 (~2.3 GB packed) | `cqm220-0/3` | link committed in the setup script |
+| `openwrt212` bundle | `openwrt-prebuilt-backup`, aarch64 gcc-13.3.0 musl (size TBD) | `cqm212` | link committed once packed and published; not part of `--component all` / `-p all` |
 
 The image is public and must stay free of licensed material, so the toolchain can
 never be baked in. **Never commit the qcom link or its Drive URL** — it points at
 Qualcomm proprietary toolchains and this repository is public; it is passed per
 recipient with `-u`/`-c`. The yocto and openwrt bundles are caches built from
-public sources, so their links (`URL_yocto`, `URL_openwrt` near the top of
-`container_docker_helper.sh`) are committed deliberately — that is what makes
-setup a single command for those.
+public sources, so their links (`URL_yocto`, `URL_openwrt`, `URL_openwrt212`
+near the top of `container_docker_helper.sh`) are committed deliberately —
+that is what makes setup a single command for those. `openwrt` and
+`openwrt212` are separate components, never merged, because their toolchains
+(arm gcc-11.2 vs. aarch64 gcc-13.3.0 musl) are not interchangeable — the
+restore code in `set_openwrt_env.sh` refuses a cache built for the other one.
+Both mount at the identical in-container path (`/pkg/openwrt-prebuilt-backup`)
+since a container only ever carries one product, so `set_openwrt_env.sh` needs
+no per-product default path.
 
 The product→bundle mapping lives in `components_for()` in
 `container_docker_helper.sh`; adding a product means adding a case there, a
 container-name case in `container_for()` and in `cqmdev`, and a branch in
-`doctor.sh`'s `WANT_YOCTO`/`WANT_OPENWRT`.
+`doctor.sh`'s `WANT_YOCTO`/`WANT_OPENWRT` (see `cqm212` for the pattern).
 
 ### The environment contract
 
