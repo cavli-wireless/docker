@@ -1,12 +1,13 @@
 # CQM22x — build environment guide
 
-From a bare machine to a firmware image, for all three product lines:
+From a bare machine to a firmware image, for all product lines:
 
 | Product | Chip | Userspace |
 |---|---|---|
 | `cqm220-3` | sdx35 | OpenWrt |
 | `cqm220-0` | sdx32 | OpenWrt |
 | `cqm211` | sdx61/62/65 | Yocto |
+| `cqm212` | sdx85/Kobuk | OpenWrt (not part of `-p all` yet — see [2](#2-set-up-the-container)) |
 
 - [1. What you need](#1-what-you-need)
 - [2. Set up the container](#2-set-up-the-container)
@@ -61,16 +62,21 @@ bundles this product needs, verifies their checksums, unpacks them, pulls the
 build image, creates the container and checks the environment. Budget 30–60
 minutes on a first run, almost all of it download and unpack.
 
-### Three bundles, only what you need
+### Bundles, only what you need
 
 | Bundle | Packed | Unpacked | Who needs it | Where the link comes from |
 |---|---|---|---|---|
 | `qcom` | ~13 GB | ~60 GB | every product | **Cavli — pass with `-u`/`-c`** |
 | `openwrt` | ~2.3 GB | ~10 GB | cqm220-0/3 | built into the script |
+| `openwrt212` | TBD | TBD | cqm212 | built into the script once packed and published |
 | `yocto` | ~24 GB | ~27 GB | cqm211 | built into the script |
 
 So an sdx35 machine downloads about 15 GB and an sdx61 machine about 37 GB. Ask
-for both and the shared `qcom` bundle is still fetched only once.
+for both and the shared `qcom` bundle is still fetched only once. `openwrt` and
+`openwrt212` are two different bundles — arm gcc-11.2 vs. aarch64 gcc-13.3.0
+musl — never the same content, even though a cqm220 and a cqm212 container
+mount whichever one they need at the very same path inside (`/pkg/openwrt-
+prebuilt-backup`).
 
 An application developer who only builds packages against the Cavli SDK
 tarball needs none of the Qualcomm material: `-p sdk` creates
@@ -102,10 +108,14 @@ bash container_docker_helper.sh -w /mnt/ -u '<link>' -c '<sha256>'
 # sdx61/62/65
 bash container_docker_helper.sh -w /mnt/ -p cqm211 -u '<link>' -c '<sha256>'
 
+# sdx85 / Kobuk
+bash container_docker_helper.sh -w /mnt/ -p cqm212 -u '<link>' -c '<sha256>'
+
 # an sdx35 and an sdx61 container side by side
 bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c '<sha256>'
 
-# every product
+# every product 'all' currently covers (cqm220-3, cqm220-0, cqm211 — ask for
+# cqm212 by name, see BUNDLES in -h)
 bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c '<sha256>'
 ```
 
@@ -152,7 +162,8 @@ bash container_docker_helper.sh -p all -u '<link>' -c '<sha256>' -n
 ```
 
 To serve the public bundles from your own mirror instead of Drive, set
-`CQM_YOCTO_URL` / `CQM_OPENWRT_URL` (and the matching `_SHA256`).
+`CQM_YOCTO_URL` / `CQM_OPENWRT_URL` / `CQM_OPENWRT212_URL` (and the matching
+`_SHA256`).
 
 ### Options worth knowing
 
@@ -162,7 +173,7 @@ To serve the public bundles from your own mirror instead of Drive, set
 | `-r DIR` | where the **bundles and caches** go (default `$HOME/cqm22x`) |
 | `-u URL` | qcom bundle link (Google Drive or plain HTTPS) |
 | `-c HEX` | expected sha256 of the qcom bundle |
-| `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211` |
+| `-p LIST` | products, comma separated, or `all`: `cqm220-3` (default), `cqm220-0`, `cqm211`, `cqm212` (not in `all` yet) |
 | `-p sdk` | application-SDK container: openwrt bundle only, no qcom bundle and no `-u`. For building packages against the Cavli SDK tarball (`sdk-*.tar.gz` from a release); cannot build kernel, abl, modem or images. Not part of `all` |
 | `-V VER` | which bundle version to use (default `1.1.0`) |
 | `-m PATH` | mount an extra host path into every container, repeatable: `PATH`, `PATH:ro`, `PATH:/inside`, `PATH:/inside:ro` (long form `--mount`) |
@@ -265,12 +276,14 @@ it would take. Worth doing on any new machine.
 │   ├── cqm22x-qcom-1.1.0.tar.zst  downloaded here, deleted after unpacking
 │   │                              unless you pass -k
 │   └── 1.1.0/                     unpacked here, ~60 GB, mounted read-only
-├── openwrt/1.1.0/                 cqm220-* — openwrt-prebuilt-backup/
+├── openwrt/1.1.0/                 cqm220-* — openwrt-prebuilt-backup/ (arm gcc-11.2)
+├── openwrt212/1.1.0/              cqm212 — openwrt-prebuilt-backup/ (aarch64 gcc-13.3.0 musl)
 ├── yocto/1.1.0/                   cqm211 — downloads/, llvm-arm-toolchain-ship/
 └── cache/
     ├── cqm220-3/{openwrt,ccache}
     ├── cqm220-0/{openwrt,ccache}
-    └── cqm211/{openwrt,ccache}
+    ├── cqm211/{openwrt,ccache}
+    └── cqm212/{openwrt,ccache}
 
 <-w>/                            your source, mounted at /work
 ```
@@ -281,7 +294,8 @@ Each bundle is versioned separately, so several versions can live side by side;
 | Bundle | Contents | Why it exists |
 |---|---|---|
 | `qcom` | HEXAGON, LLVM, linaro, sectools, prebuilts | the actual toolchain — nothing builds without it |
-| `openwrt` | OpenWrt prebuilt host tools and cross toolchain | the first app build restores it instead of compiling gcc/binutils/musl from source |
+| `openwrt` | OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) | the first app build restores it instead of compiling gcc/binutils/musl from source |
+| `openwrt212` | Same, for aarch64 gcc-13.3.0 musl | same reason, for cqm212 — a separate bundle since the toolchains are not interchangeable |
 | `yocto` | bitbake `DL_DIR` cache + LLVM/ARM toolchain | the first cqm211 build reads sources locally instead of fetching hundreds of tarballs |
 
 Nothing of value lives inside the container — the writable layer stays around
@@ -456,6 +470,7 @@ product gets its own container:
 | `cqm220-3` | `build_cqm22x_jammy_<user>` |
 | `cqm220-0` | `build_cqm22x_jammy_<user>_cqm220-0` |
 | `cqm211` | `build_cqm22x_jammy_<user>_cqm211` |
+| `cqm212` | `build_cqm22x_jammy_<user>_cqm212` |
 
 They share the `qcom` bundle — it is downloaded and stored once — but each keeps
 its own OpenWrt cache and ccache. Two products must never share a `build_dir`,
@@ -464,7 +479,9 @@ the reason they are separate containers rather than one container with
 everything mounted.
 
 The bundles follow from the products you asked for: `-p cqm220-3,cqm220-0` pulls
-qcom + openwrt, `-p cqm211` pulls qcom + yocto, `-p all` pulls all three.
+qcom + openwrt, `-p cqm211` pulls qcom + yocto, `-p cqm212` pulls qcom +
+openwrt212, `-p all` pulls qcom + openwrt + yocto (cqm212 is not part of `all`
+yet).
 
 ### Flashing
 
@@ -583,6 +600,16 @@ For **qcom**, send recipients the link and the sha256; they pass them to `-u`
 and `-c`. For **yocto** and **openwrt**, make the Drive files link-shareable and
 put the links and checksums into `container_docker_helper.sh` (`URL_yocto` /
 `URL_openwrt` near the top) — recipients then need to be told nothing.
+
+**openwrt212** (cqm212) is not part of `--component all` — pack it explicitly,
+and from a CQM212 build host's own `/pkg` (its cache is aarch64 gcc-13.3.0
+musl, a different toolchain from cqm220's `/pkg/openwrt-prebuilt-backup`):
+
+```bash
+./pack-bundle.sh --component openwrt212 --version 1.1.0 --source /pkg --upload
+```
+
+Then fill in `URL_openwrt212` / `SHA_openwrt212` the same way as `openwrt`.
 
 The yocto tree is usually not under `/pkg` on the packing host, so point at it
 explicitly:
