@@ -66,7 +66,8 @@ local PRODUCT="$1"
 WANT_QCOM=yes WANT_BUILDROOT=no
 case "$PRODUCT" in
     cqm211)  WANT_YOCTO=yes; WANT_OPENWRT=no;;
-    cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=no;;   # qcom-only, no openwrt/yocto bundle
+    # cqm212 mounts its own aarch64 cache at the same /pkg/openwrt-prebuilt-backup path.
+    cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=yes;;
     sdk)     WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
     buildroot) WANT_YOCTO=no; WANT_OPENWRT=no; WANT_QCOM=no; WANT_BUILDROOT=yes;;
     *)       WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_BUILDROOT=yes;;
@@ -231,7 +232,7 @@ fi  # WANT_QCOM
 # container that is correctly set up for the other product line.
 if [[ "$WANT_OPENWRT" == yes ]]; then
     echo
-    echo "openwrt bundle (cqm220-0/3)"
+    echo "openwrt bundle ($PRODUCT)"
     if [[ -d /pkg/openwrt-prebuilt-backup ]]; then
         # Without this the first app build compiles gcc/binutils/musl from
         # source — hours instead of an extract. It is not fatal, so it warns.
