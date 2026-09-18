@@ -9,29 +9,38 @@
 #
 #   ./pack-bundle.sh --component all --version 1.1.0 --source /pkg --upload
 #
-# THREE COMPONENTS, PACKED SEPARATELY
+# COMPONENTS, PACKED SEPARATELY
 #
 # The toolchain used to be one 50 GB archive that every recipient had to take
-# whole. It is split now, because the three pieces have different audiences and
-# very different licence status:
+# whole. It is split now, because the pieces have different audiences and very
+# different licence status:
 #
-#   qcom     qct/software/{HEXAGON_Tools,arm,llvm}, sectools, prebuilts
-#            ~49 GB. Needed by EVERY product. Qualcomm proprietary — its link
-#            is never committed and is handed out per recipient.
+#   qcom       qct/software/{HEXAGON_Tools,arm,llvm}, sectools, prebuilts
+#              ~49 GB. Needed by EVERY product. Qualcomm proprietary — its
+#              link is never committed and is handed out per recipient.
 #
-#   yocto    yocto/{downloads,llvm-arm-toolchain-ship}
-#            ~27 GB. Only for cqm211 (sdx61/62/65). Public source tarballs and
-#            an LLVM build; nothing proprietary, so the link ships in the
-#            setup script.
+#   yocto      yocto/{downloads,llvm-arm-toolchain-ship}
+#              ~27 GB. Only for cqm211 (sdx61/62/65). Public source tarballs
+#              and an LLVM build; nothing proprietary, so the link ships in
+#              the setup script.
 #
-#   openwrt  openwrt-prebuilt-backup
-#            ~10 GB raw, ~2.3 GB packed. Only for cqm220-0/3 (sdx35/32).
-#            OpenWrt's own host tools and cross toolchain — also public.
+#   openwrt    openwrt-prebuilt-backup
+#              ~10 GB raw, ~2.3 GB packed. Only for cqm220-0/3 (sdx35/32).
+#              OpenWrt's own host tools and cross toolchain (arm gcc-11.2) —
+#              also public.
+#
+#   openwrt212 openwrt-prebuilt-backup, same layout as openwrt above, but for
+#              cqm212 (sdx85/Kobuk): aarch64 gcc-13.3.0 musl instead of arm
+#              gcc-11.2. Kept as its own component, not folded into "openwrt"
+#              or "all", because the two toolchains are not interchangeable —
+#              restoring one into the other product's tree is refused by the
+#              build scripts. Pack it from a CQM212 build host's /pkg, never
+#              from a cqm220 one.
 #
 # Splitting means a cqm220 developer never downloads the 27 GB of yocto cache,
-# and a cqm211 developer never downloads the OpenWrt one. Everyone still needs
+# and a cqm211 developer never downloads an OpenWrt one. Everyone still needs
 # qcom, which is why it stays a component of its own rather than being merged
-# into either.
+# into any of the others.
 #
 # Layout inside each archive (extracted to <root>/<component>/<version>/):
 #   <payload subtrees>
@@ -53,7 +62,11 @@ RCLONE_REMOTE="${CQM_RCLONE_REMOTE:-GGDrive}"
 RCLONE_CONFIG_FILE="${CQM_RCLONE_CONFIG:-$HOME/rclone_fw_share.conf}"
 REMOTE_DIR="${CQM_BUNDLE_REMOTE_DIR:-/cqm22x-buildenv/toolchain}"
 
+# "all" deliberately excludes openwrt212: it lives on a different host (a
+# CQM212 build box, not a cqm220 one) and has no place in a routine "pack
+# everything from this /pkg" run. Pack it explicitly with --component openwrt212.
 ALL_COMPONENTS=(qcom yocto openwrt)
+KNOWN_COMPONENTS=("${ALL_COMPONENTS[@]}" openwrt212)
 
 log()  { printf '\e[36m==>\e[0m %s\n' "$*"; }
 die()  { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
@@ -67,7 +80,7 @@ usage() {
 cat <<EOF
 pack-bundle.sh --component C --version V [options]
 
-  --component C      qcom | yocto | openwrt | all       (repeatable)
+  --component C      qcom | yocto | openwrt | openwrt212 | all   (repeatable)
   --version V        bundle version, e.g. 1.1.0            (required)
   --source DIR       /pkg tree to pack from                (default $SOURCE)
   --map REL=DIR      take REL from DIR instead of \$SOURCE/REL (repeatable)
@@ -83,12 +96,14 @@ pack-bundle.sh --component C --version V [options]
 
 COMPONENTS
 
-  qcom      qct/software/{HEXAGON_Tools,arm,llvm}, sectools, prebuilts
-            every product needs it — PROPRIETARY, link handed out per recipient
-  yocto     yocto/{downloads,llvm-arm-toolchain-ship}
-            cqm211 (sdx61/62/65) only — public
-  openwrt   openwrt-prebuilt-backup
-            cqm220-0/3 (sdx35/32) only — public
+  qcom        qct/software/{HEXAGON_Tools,arm,llvm}, sectools, prebuilts
+              every product needs it — PROPRIETARY, link handed out per recipient
+  yocto       yocto/{downloads,llvm-arm-toolchain-ship}
+              cqm211 (sdx61/62/65) only — public
+  openwrt     openwrt-prebuilt-backup (arm gcc-11.2)
+              cqm220-0/3 (sdx35/32) only — public
+  openwrt212  openwrt-prebuilt-backup (aarch64 gcc-13.3.0 musl)
+              cqm212 (sdx85/Kobuk) only — public, not part of --component all
 
 Staging defaults to a directory beside the output rather than /tmp: the qcom
 tree is around 50 GB, and /tmp is frequently a tmpfs sized well below that.
@@ -128,20 +143,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$VERSION" ]] || { usage; die "--version is required"; }
-[[ ${#COMPONENTS[@]} -gt 0 ]] || { usage; die "--component is required (qcom, yocto, openwrt or all)"; }
+[[ ${#COMPONENTS[@]} -gt 0 ]] || { usage; die "--component is required (qcom, yocto, openwrt, openwrt212 or all)"; }
 
 # Expand "all", reject anything unknown before an hour of copying starts.
 expanded=()
 for c in "${COMPONENTS[@]}"; do
     case "$c" in
-        all)                 expanded+=("${ALL_COMPONENTS[@]}");;
-        qcom|yocto|openwrt)  expanded+=("$c");;
-        *) die "unknown component: $c (expected qcom, yocto, openwrt or all)";;
+        all)                          expanded+=("${ALL_COMPONENTS[@]}");;
+        qcom|yocto|openwrt|openwrt212) expanded+=("$c");;
+        *) die "unknown component: $c (expected qcom, yocto, openwrt, openwrt212 or all)";;
     esac
 done
-# De-duplicate while keeping the declared order.
+# De-duplicate while keeping the declared order. Iterates KNOWN_COMPONENTS
+# (not ALL_COMPONENTS) so an explicit --component openwrt212 survives even
+# though "all" does not expand to it.
 COMPONENTS=()
-for c in "${ALL_COMPONENTS[@]}"; do
+for c in "${KNOWN_COMPONENTS[@]}"; do
     for e in "${expanded[@]}"; do
         [[ "$c" == "$e" ]] && { COMPONENTS+=("$c"); break; }
     done
@@ -162,6 +179,10 @@ mkdir -p "$STAGE_DIR"
 INCLUDE_qcom=(qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts)
 INCLUDE_yocto=(downloads llvm-arm-toolchain-ship)
 INCLUDE_openwrt=(openwrt-prebuilt-backup)
+# Same include path as openwrt on purpose: EXCLUDE_FROM below is keyed by
+# this path, not by component name, so the *.tar exclusion applies to both
+# without repeating it.
+INCLUDE_openwrt212=(openwrt-prebuilt-backup)
 
 declare -A SRCREL=(
     [downloads]=yocto/downloads
@@ -189,9 +210,10 @@ zstd_level() {
 
 component_blurb() {
     case "$1" in
-        qcom)    echo "Qualcomm toolchain — required by every product (cqm220-0/3, cqm211)";;
-        yocto)   echo "Yocto download cache and LLVM/ARM toolchain — cqm211 (sdx61/62/65)";;
-        openwrt) echo "OpenWrt prebuilt host tools and cross toolchain — cqm220-0/3 (sdx35/32)";;
+        qcom)       echo "Qualcomm toolchain — required by every product (cqm220-0/3, cqm211, cqm212)";;
+        yocto)      echo "Yocto download cache and LLVM/ARM toolchain — cqm211 (sdx61/62/65)";;
+        openwrt)    echo "OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) — cqm220-0/3 (sdx35/32)";;
+        openwrt212) echo "OpenWrt prebuilt host tools and cross toolchain (aarch64 gcc-13.3.0 musl) — cqm212 (sdx85/Kobuk)";;
     esac
 }
 

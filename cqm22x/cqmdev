@@ -30,9 +30,11 @@ Commands:
   logs                  follow container output
 
 Options:
-  -p, --product NAME    cqm220-0 | cqm220-3 | cqm211   (default $PRODUCT)
-                        cqm220-* build an OpenWrt userspace (sdx35/32),
-                        cqm211 a Yocto one (sdx61/62/65)
+  -p, --product NAME    cqm220-0 | cqm220-3 | cqm211 | cqm212   (default $PRODUCT)
+                        cqm220-* and cqm212 build an OpenWrt userspace
+                        (sdx35/32, sdx85), cqm211 a Yocto one (sdx61/62/65).
+                        'sync' does not support cqm212 yet (different
+                        manifest repo) -- sync it by hand in the container.
   -h, --help
 
 Examples:
@@ -55,9 +57,9 @@ die() { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
 # cqm220-3 is the default product and gets the plain name, so the container is
 # the one the setup output tells you to `docker start -i`.
 case "$PRODUCT" in
-    cqm220-3)          CONTAINER="${DOCKER_PRV_NAME}_$(id -un)";;
-    cqm220-0|cqm211)   CONTAINER="${DOCKER_PRV_NAME}_$(id -un)_${PRODUCT}";;
-    *) die "unknown product: $PRODUCT (expected cqm220-0, cqm220-3 or cqm211)";;
+    cqm220-3)                CONTAINER="${DOCKER_PRV_NAME}_$(id -un)";;
+    cqm220-0|cqm211|cqm212)  CONTAINER="${DOCKER_PRV_NAME}_$(id -un)_${PRODUCT}";;
+    *) die "unknown product: $PRODUCT (expected cqm220-0, cqm220-3, cqm211 or cqm212)";;
 esac
 
 [[ $# -gt 0 ]] || { usage; exit 1; }
@@ -94,6 +96,7 @@ sync)
     case "$PRODUCT" in
         cqm220-0) BRANCH=cavli_kuno_le_1_0;;
         cqm220-3) BRANCH=cavli_sdx35_iot_le_1_0;;
+        cqm212)   die "cqmdev sync does not support cqm212 yet -- it lives in its own manifest repo (cqm212-manifests), not cqm22x-manifests. 'cqmdev -p cqm212 shell' and sync it by hand for now.";;
     esac
     MANIFEST_URL="git@github.com:cavli-wireless/cqm22x-manifests.git"
     MANIFEST_FILE=chipcode-cqm22x-cav-base.xml
