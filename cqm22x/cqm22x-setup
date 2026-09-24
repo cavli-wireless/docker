@@ -1,0 +1,518 @@
+#!/bin/bash
+# cqm22x-setup — Docker v2 (setup/update/status/version): one container per
+# user holding every product, mirrors host identity. Full docs: README.md.
+#   wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm22x/cqm22x-setup && chmod +x cqm22x-setup
+#   ./cqm22x-setup setup
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+CQM_ROOT="${CQM_ROOT:-$HOME/cqm22x}"
+STATE_DIR="$CQM_ROOT/v2"
+STATE_FILE="$STATE_DIR/state.json"
+CONTAINER_BASE=build_cqm2xx
+
+# Appended as _<suffix> to the container name; combine with a separate
+# CQM_ROOT for a fully isolated instance (see README).
+CQM_NAME_SUFFIX="${CQM_NAME_SUFFIX:-}"
+
+# Local/offline bundle source: <dir>/<component>/ instead of Drive, same
+# layout and checksums. Recorded in state.json so `update` reuses it.
+BUNDLE_DIR="${CQM_BUNDLE_DIR:-}"
+
+DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
+IMAGE_TAG="${CQM_IMAGE_TAG:-1.1.4}"          # new-image tag; old 1.0.1/1.1.0/1.1.1/1.1.2/1.1.3/latest never touched
+BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
+
+# openwrt/yocto: public, packed as several files; fetched+unpacked into the
+# same layout container_docker_helper.sh expects. "name sha256 drive_file_id".
+BUNDLE_FILES_openwrt='
+prebuilts.tar.zst ed17b3427b6dc08535a346503254a5ab34fcf55e8d6e9aa62552d4fd43d6d209 1vmEFhcEq_9BkhZS1itmiWZl5m9r7FdUW
+openwrt-prebuilt-backup.tar 5a53f1289127c9ec8b7542bd16fe0305f8bf51bfcdca779f0f622c8dcc54577e 1qRP8rTwhfLwu43jVsz7bvn0g94z2A-Tl
+openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7455447b2ce6703ae 1yfF85EiRpDeS4yRi8ccDtRLdki5OnDKL
+'
+BUNDLE_FILES_yocto='
+downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
+llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878111e95e16d2bd7ad 1Rb9k9CsZ2u7kHVpPzIL8ytcq7tygqidz
+'
+
+# qcom: a private GitHub release, tag = bundle version. Access = membership
+# in the cavli-wireless org; no password. Login is a device code, done in a
+# throwaway container so it works the same locally and over SSH.
+QCOM_RELEASE_REPO="${CQM_QCOM_RELEASE_REPO:-cavli-wireless/cqm2xx-qcom-bundles}"
+QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-$BUNDLE_VERSION}"
+
+# full (internal, qcom) vs customer (default): --full wins, else a previous
+# setup's state.json value, else customer.
+FULL_MODE=""
+
+ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211 cqm212"
+
+log()  { printf '\033[36m[cqm22x-setup]\033[0m %s\n' "$*"; }
+die()  { printf '\033[31m[cqm22x-setup] error:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+cqm22x-setup — set up and manage the CQM2xx build container.
+
+  setup [products...]    install/update products and (re)create the container.
+                          Default: all products ($ALL_PRODUCTS).
+  update                  bring the container's image and bundles up to date.
+  status                  show what's installed and the container's mounts.
+  version                 print the target image tag and bundle version.
+
+  -m <dir>                bind-mount a host dir into the container (repeatable).
+  --name <x>              use a separate, named container instead of the default.
+  --bundle-dir <dir>      install bundles from <dir> instead of downloading them.
+  --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default).
+  --full / --customer     do / don't install Qualcomm tools (GitHub device login).
+  -h, --help              this text.
+
+Everything lives under \$CQM_ROOT (default ~/cqm22x); container name:
+build_cqm2xx_<user>.
+
+Examples:
+  ./cqm22x-setup setup cqm220-0 -m /mnt/SSD_2TB/cqm22x-src   # first install
+  ./cqm22x-setup setup cqm211                                # add a product
+  ./cqm22x-setup update                                      # bring up to date
+EOF
+}
+
+state_get() { jq -r "$1 // empty" "$STATE_FILE"; }
+
+# --- container ownership guard -----------------------------------------
+# A name that exists in `docker ps -a` but isn't in our recorded list is
+# refused before any `docker run`/`rm`.
+container_owned() {
+    jq -e --arg n "$1" '(.containers // []) | index($n) != null' "$STATE_FILE" >/dev/null
+}
+record_container() {
+    local tmp; tmp="$(mktemp)"
+    jq --arg n "$1" '.containers = ((.containers // []) + [$n] | unique)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+guard_container() {
+    local name="$1"
+    if docker ps -a --format '{{.Names}}' | grep -qx "$name" && ! container_owned "$name"; then
+        die "'$name' already exists and this script did not create it — refusing to touch it. Re-run with --name <suffix> (or CQM_NAME_SUFFIX) and/or a separate CQM_ROOT to use an isolated container."
+    fi
+}
+state_merge() {
+    # $1 = space separated product list to merge in; rest of the state
+    # (mounts, ssh, image/bundle version, container name) comes from globals.
+    local tmp; tmp="$(mktemp)"
+    local mounts_json; mounts_json="$(printf '%s\n' "${EXTRA_MOUNTS[@]:-}" | sed '/^$/d' | jq -R . | jq -s .)"
+    jq --arg img "$IMAGE_TAG" --arg bv "$BUNDLE_VERSION" --arg bd "$BUNDLE_DIR" \
+       --arg cname "$CONTAINER_NAME" --argjson ssh "$([[ "$SSH_ENABLED" == 1 ]] && echo true || echo false)" \
+       --argjson full "$([[ "$FULL_MODE" == 1 ]] && echo true || echo false)" \
+       --argjson mounts "$mounts_json" \
+       --argjson prods "$(printf '%s\n' $1 | jq -R . | jq -s .)" \
+       '.image_tag=$img | .bundle_version=$bv | .bundle_dir=$bd | .container=$cname |
+        .ssh=$ssh | .full=$full |
+        .mounts=(((.mounts // []) + $mounts) | unique) |
+        .products = (.products + (reduce $prods[] as $p ({}; .[$p]={"image_tag":$img,"bundle_version":$bv,"bundle_source":($bd | if . == "" then "drive" else "local:"+. end)})))' \
+       "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+drive_fetch() {
+    # $1 = drive file id, $2 = output path
+    curl -fsSL "https://drive.usercontent.google.com/download?id=$1&confirm=t" -o "$2"
+}
+
+prestage_component() {
+    # $1 = component (openwrt|yocto), $2 = newline "name sha256 id" list.
+    # Downloads+unpacks into $CQM_ROOT/$1/$BUNDLE_VERSION, marks .complete.
+    local component="$1" files="$2" dest stage src_dir=""
+    dest="$CQM_ROOT/$component/$BUNDLE_VERSION"
+    [[ -f "$dest/.complete" ]] && { log "$component $BUNDLE_VERSION already staged at $dest"; return 0; }
+    [[ "$files" != *"__PENDING__"* ]] || die "$component bundle file list not set yet"
+    if [[ -n "$BUNDLE_DIR" ]]; then
+        src_dir="$BUNDLE_DIR/$component"
+        [[ -d "$src_dir" ]] || die "--bundle-dir: $src_dir not found"
+        local local_bv; local_bv="$(cat "$src_dir/BUNDLE_VERSION" 2>/dev/null || true)"
+        [[ "$local_bv" == "$BUNDLE_VERSION" ]] \
+            || die "--bundle-dir: $src_dir/BUNDLE_VERSION is '$local_bv', expected $BUNDLE_VERSION"
+    fi
+    stage="$CQM_ROOT/cache/$component-$BUNDLE_VERSION"
+    mkdir -p "$dest" "$stage"
+    while read -r name sha id; do
+        [[ -n "$name" ]] || continue
+        local f="$stage/$name"
+        if [[ ! -f "$f" ]] || ! echo "$sha  $f" | sha256sum -c --quiet - 2>/dev/null; then
+            if [[ -n "$src_dir" ]]; then
+                log "$component: taking $name from $src_dir"
+                cp "$src_dir/$name" "$f"
+            else
+                log "$component: fetching $name"
+                drive_fetch "$id" "$f"
+            fi
+            echo "$sha  $f" | sha256sum -c - || die "$component/$name checksum mismatch"
+        fi
+        case "$name" in
+            *.tar.zst) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest";;
+            *.tar)     tar -xf "$f" -C "$dest";;
+            *) die "don't know how to unpack $name";;
+        esac
+    done <<<"$files"
+    printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
+    touch "$dest/.complete"
+    rm -rf "$stage"
+    ok_size="$(du -sh "$dest" | cut -f1)"
+    log "$component $BUNDLE_VERSION ready ($ok_size) at $dest"
+}
+
+prestage_qcom_local() {
+    # $1 = dest. --bundle-dir/qcom on disk: plain per-file layout, no
+    # password — offline path, used instead of the GitHub release.
+    local dest="$1" src="$BUNDLE_DIR/qcom"
+    [[ -d "$src" ]] || die "--bundle-dir: $src not found"
+    local local_bv; local_bv="$(cat "$src/BUNDLE_VERSION" 2>/dev/null || true)"
+    [[ "$local_bv" == "$BUNDLE_VERSION" ]] \
+        || die "--bundle-dir: $src/BUNDLE_VERSION is '$local_bv', expected $BUNDLE_VERSION"
+    [[ -f "$src/SHA256SUMS" ]] || die "--bundle-dir: $src/SHA256SUMS missing"
+    ( cd "$BUNDLE_DIR" && sha256sum --ignore-missing -c "qcom/SHA256SUMS" ) \
+        || die "qcom: checksum mismatch under $src"
+
+    log "qcom: local bundle at $src"
+    mkdir -p "$dest/qct/software"
+    local f name
+    for f in "$src"/*.tar.zst "$src"/*.tar; do
+        [[ -e "$f" ]] || continue
+        name="$(basename "$f")"
+        case "$name" in
+            sectools.tar.zst|sectools.tar)
+                tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest";;
+            *.tar.zst) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest/qct/software";;
+            *.tar)     tar -xf "$f" -C "$dest/qct/software";;
+        esac
+    done
+}
+
+# Runs inside a throwaway container: gh device login (if needed), download
+# the qcom release, verify, reassemble split parts, unpack. $1 = dest.
+qcom_fetch_script() {
+    cat <<'SCRIPT'
+set -euo pipefail
+gh auth status --hostname github.com >/dev/null 2>&1 \
+    || gh auth login --hostname github.com --git-protocol https --web \
+    || { echo "qcom: GitHub login failed" >&2; exit 1; }
+mkdir -p "$QCOM_STAGE"
+gh release download "$QCOM_TAG" -R "$QCOM_REPO" -D "$QCOM_STAGE" --clobber \
+    || { echo "qcom: could not download release $QCOM_TAG from $QCOM_REPO — not an org member, or the release is missing" >&2; exit 1; }
+cd "$QCOM_STAGE"
+sha256sum -c SHA256SUMS || { echo "qcom: checksum mismatch — nothing installed" >&2; exit 1; }
+# reassemble any split parts (name.partNNN, numeric, zero-padded -> name)
+for p in *.part[0-9][0-9][0-9]; do
+    [[ -e "$p" ]] || continue
+    base="${p%.part[0-9][0-9][0-9]}"
+    [[ -e "$base" ]] && continue
+    cat "${base}".part[0-9][0-9][0-9] > "$base"
+done
+rm -f -- *.part[0-9][0-9][0-9]
+mkdir -p "$QCOM_DEST/qct/software"
+for f in *.tar.zst *.tar; do
+    [[ -e "$f" ]] || continue
+    case "$f" in
+        sectools.tar.zst|sectools.tar) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$QCOM_DEST";;
+        *.tar.zst) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$QCOM_DEST/qct/software";;
+        *.tar)     tar -xf "$f" -C "$QCOM_DEST/qct/software";;
+    esac
+done
+cp -f BUNDLE_VERSION "$QCOM_DEST/BUNDLE_VERSION"
+touch "$QCOM_DEST/.complete"
+SCRIPT
+}
+
+prestage_qcom() {
+    local dest="$CQM_ROOT/qcom/$BUNDLE_VERSION"
+    [[ -f "$dest/.complete" ]] && { log "qcom $BUNDLE_VERSION already staged at $dest"; return 0; }
+    mkdir -p "$CQM_ROOT/cache" "$dest"
+    if [[ -n "$BUNDLE_DIR" ]]; then
+        prestage_qcom_local "$dest"
+        printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
+        touch "$dest/.complete"
+        log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
+        return 0
+    fi
+    log "qcom bundle: GitHub login (device code) + download from $QCOM_RELEASE_REPO tag $QCOM_RELEASE_TAG"
+    mkdir -p "$CQM_ROOT/home"
+    # -t only with a real terminal on stdin — a plain -i still shows the
+    # device code over a non-interactive SSH command or a background run.
+    local tty_flag=-i; [[ -t 0 ]] && tty_flag=-it
+    # QCOM_STAGE lives under cache/ — must be mounted, or the container can't
+    # create it (and 8+ GB would land in the container layer instead).
+    local qlog; qlog="$(mktemp)"
+    set +e
+    docker run --rm "$tty_flag" \
+        -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)" -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)" -e "CQM_HOME=$HOME" \
+        -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$QCOM_RELEASE_TAG" \
+        -e "QCOM_STAGE=$CQM_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG" -e "QCOM_DEST=$dest" \
+        -v "$CQM_ROOT/home:$HOME" -v "$CQM_ROOT/qcom:$CQM_ROOT/qcom" -v "$CQM_ROOT/cache:$CQM_ROOT/cache" \
+        "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script)" 2>&1 | tee "$qlog"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    # surface the container's own cause (login/access/download/checksum), not a generic message
+    if [[ $rc -ne 0 ]]; then
+        die "qcom bundle: nothing installed — $(tail -n 3 "$qlog" | tr '\n' ' ')"
+    fi
+    rm -f "$qlog"
+    [[ -f "$dest/.complete" ]] || die "qcom bundle: did not complete — nothing installed"
+    rm -rf "$CQM_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG"
+    log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
+}
+
+prestage_prebuilts() {
+    # cqm211 needs qcom + yocto, but `prebuilts` lives in the openwrt bundle.
+    local qcom_dest="$CQM_ROOT/qcom/$BUNDLE_VERSION"
+    [[ -d "$qcom_dest/prebuilts" ]] && { log "prebuilts already in the qcom bundle (old layout) — nothing to stage"; return 0; }
+    local dest="$CQM_ROOT/openwrt/$BUNDLE_VERSION"
+    [[ -d "$dest/prebuilts" ]] && { log "prebuilts already staged at $dest/prebuilts"; return 0; }
+
+    local line name sha id
+    line="$(grep '^prebuilts\.tar\.zst ' <<<"$BUNDLE_FILES_openwrt")"
+    [[ -n "$line" ]] || die "prebuilts.tar.zst not in the openwrt bundle file list"
+    read -r name sha id <<<"$line"
+
+    mkdir -p "$dest" "$CQM_ROOT/cache"
+    local stage="$CQM_ROOT/cache/openwrt-$BUNDLE_VERSION"
+    mkdir -p "$stage"
+    local f="$stage/$name"
+    if [[ ! -f "$f" ]] || ! echo "$sha  $f" | sha256sum -c --quiet - 2>/dev/null; then
+        if [[ -n "$BUNDLE_DIR" ]]; then
+            local src_dir="$BUNDLE_DIR/openwrt"
+            [[ -d "$src_dir" ]] || die "--bundle-dir: $src_dir not found"
+            local local_bv; local_bv="$(cat "$src_dir/BUNDLE_VERSION" 2>/dev/null || true)"
+            [[ "$local_bv" == "$BUNDLE_VERSION" ]] \
+                || die "--bundle-dir: $src_dir/BUNDLE_VERSION is '$local_bv', expected $BUNDLE_VERSION"
+            log "prebuilts: taking $name from $src_dir"
+            cp "$src_dir/$name" "$f"
+        else
+            log "prebuilts: fetching $name"
+            drive_fetch "$id" "$f"
+        fi
+        echo "$sha  $f" | sha256sum -c - || die "openwrt/$name checksum mismatch"
+    fi
+    tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest"
+    rm -f "$f"
+    log "prebuilts ready at $dest/prebuilts"
+}
+
+# shared kernel-build prebuilts (clang/gcc/ndk/jdk/bazel): qcom/<v>/prebuilts
+# (old bundles) or openwrt/<v>/prebuilts (new, shared by every qcom user).
+resolve_prebuilts_dir() {
+    local qdir="$1" odir="$CQM_ROOT/openwrt/$BUNDLE_VERSION"
+    [[ -d "$qdir/prebuilts" ]] && { echo "$qdir/prebuilts"; return; }
+    [[ -d "$odir/prebuilts" ]] && { echo "$odir/prebuilts"; return; }
+    echo ""
+}
+
+# --- one container, every installed product --------------------------------
+# Builds the `docker run` args for $1 = full product list into RUN_ARGS.
+# Writable ccache/OpenWrt caches are namespaced per product (/ccache/<p>,
+# /pkg/openwrt/<p>); point CCACHE_DIR at your product's subpath when building.
+build_run_args() {
+    local products="$1"
+    RUN_ARGS=(--name "$CONTAINER_NAME" --hostname "$CONTAINER_BASE" -dit
+              -e "TERM=xterm-256color"
+              -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)"
+              -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)"
+              -e "CQM_HOME=$HOME"
+              -e "CQM_PRODUCTS=$(tr ' ' ',' <<<"$products")"
+              --add-host "${CONTAINER_BASE}:127.0.0.1"
+              -v /etc/localtime:/etc/localtime:ro)
+
+    local groups; groups="$(id -G | tr ' ' '\n' | grep -vx "$(id -g)" | paste -sd, -)"
+    [[ -n "$groups" ]] && RUN_ARGS+=(-e "CQM_GROUPS=$groups")
+
+    # home: $CQM_ROOT/home, never the real one, at the host's own $HOME path.
+    mkdir -p "$CQM_ROOT/home"
+    RUN_ARGS+=(-v "$CQM_ROOT/home:$HOME")
+    if [[ "$SSH_ENABLED" == 1 && -d "$HOME/.ssh" ]]; then
+        RUN_ARGS+=(-v "$HOME/.ssh:$HOME/.ssh:ro")
+    fi
+
+    # workspace + any extra -m dirs, each at the same path host and container.
+    mkdir -p "$CQM_ROOT/workspace"
+    RUN_ARGS+=(-v "$CQM_ROOT/workspace:$CQM_ROOT/workspace")
+    local m
+    for m in "${ALL_MOUNTS[@]}"; do
+        [[ "$m" == "$CQM_ROOT/workspace" ]] && continue
+        RUN_ARGS+=(-v "$m:$m")
+    done
+
+    RUN_ARGS+=(-e "CQM_FULL=$FULL_MODE")
+
+    local need_qcom=no need_openwrt=no need_yocto=no p
+    for p in $products; do
+        case "$p" in cqm220-0|cqm220-3|cqm211|cqm212) need_qcom=yes;; esac
+        case "$p" in cqm220-0|cqm220-3) need_openwrt=yes;; esac
+        case "$p" in cqm211) need_yocto=yes;; esac
+    done
+
+    # customer (default) install: no qcom bundle, no qcom mounts, regardless
+    # of which products are otherwise installed.
+    [[ "$FULL_MODE" == 1 ]] || need_qcom=no
+
+    if [[ "$need_qcom" == yes ]]; then
+        local qcom_dir="$CQM_ROOT/qcom/$BUNDLE_VERSION" prebuilts_dir
+        RUN_ARGS+=(-v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
+                   -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
+                   -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
+                   -v "$qcom_dir/sectools:/pkg/sectools:ro")
+        prebuilts_dir="$(resolve_prebuilts_dir "$qcom_dir")"
+        [[ -n "$prebuilts_dir" ]] && RUN_ARGS+=(-v "$prebuilts_dir:/pkg/prebuilts:ro")
+        [[ -f "$qcom_dir/BUNDLE_VERSION" ]]  && RUN_ARGS+=(-v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro")
+        [[ -r "$qcom_dir/SHA256SUMS.spot" ]] && RUN_ARGS+=(-v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro")
+    fi
+    if [[ "$need_openwrt" == yes ]]; then
+        local openwrt_dir="$CQM_ROOT/openwrt/$BUNDLE_VERSION"
+        RUN_ARGS+=(-v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro")
+        [[ -f "$openwrt_dir/BUNDLE_VERSION" ]] && RUN_ARGS+=(-v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro")
+    fi
+    if [[ "$need_yocto" == yes ]]; then
+        local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
+        mkdir -p "$CQM_ROOT/cache/yocto-downloads"
+        RUN_ARGS+=(-v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro"
+                   -v "$CQM_ROOT/cache/yocto-downloads:/pkg/yocto/downloads")
+    fi
+
+    # per-product writable caches — never shared between products.
+    for p in $products; do
+        case "$p" in
+            cqm220-0|cqm220-3|cqm211|cqm212)
+                mkdir -p "$CQM_ROOT/cache/$p/ccache"
+                RUN_ARGS+=(-v "$CQM_ROOT/cache/$p/ccache:/ccache/$p")
+                ;;
+        esac
+        case "$p" in
+            cqm220-0|cqm220-3)
+                mkdir -p "$CQM_ROOT/cache/$p/openwrt"
+                RUN_ARGS+=(-v "$CQM_ROOT/cache/$p/openwrt:/pkg/openwrt/$p")
+                ;;
+        esac
+    done
+}
+
+cmd_setup() {
+    local new_products="${*:-$ALL_PRODUCTS}"
+    new_products="$(tr ', ' '  ' <<<"$new_products")"
+    for p in $new_products; do
+        case " $ALL_PRODUCTS " in *" $p "*) ;; *) die "unknown product: $p";; esac
+    done
+
+    guard_container "$CONTAINER_NAME"
+
+    # customer (default): never fetch/stage/decrypt qcom. --full (or a
+    # previous --full recorded in state.json): stage it as before.
+    [[ "$FULL_MODE" == 1 ]] && prestage_qcom
+    for p in $new_products; do
+        case "$p" in
+            cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt";;
+            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
+        esac
+    done
+
+    local installed; installed="$(state_get '.products | keys | join(" ")')"
+    local all_products; all_products="$(printf '%s\n' $installed $new_products | sort -u | tr '\n' ' ')"
+
+    log "pulling $DOCKER_IMG:$IMAGE_TAG"
+    docker pull "$DOCKER_IMG:$IMAGE_TAG" >/dev/null
+
+    build_run_args "$all_products"
+    if container_owned "$CONTAINER_NAME"; then
+        docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" \
+            && log "recreating $CONTAINER_NAME — anything running inside it is stopped"
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+    docker run "${RUN_ARGS[@]}" "$DOCKER_IMG:$IMAGE_TAG" tail -f /dev/null >/dev/null
+    record_container "$CONTAINER_NAME"
+
+    # wait for entrypoint.sh's useradd before printing the exec hint below.
+    local i; for i in $(seq 1 30); do
+        docker exec "$CONTAINER_NAME" id "$(id -un)" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+
+    state_merge "$new_products"
+    [[ "$SSH_ENABLED" == 1 ]] && { [[ -d "$HOME/.ssh" ]] && log "mounted ~/.ssh read-only" || log "~/.ssh not found — skipped"; } \
+        || log "~/.ssh not mounted (--no-ssh)"
+    log "done. container: $CONTAINER_NAME. installed products: $(state_get '.products | keys | join(",")')"
+    log "shell in: docker exec -it --user \$(id -un) -e HOME=\$HOME $CONTAINER_NAME bash -l"
+}
+
+cmd_update() {
+    local installed; installed="$(state_get '.products | keys | join(" ")')"
+    [[ -n "$installed" ]] || die "nothing installed yet — run 'setup' first"
+    local cur_img cur_bv
+    cur_img="$(state_get '.image_tag')"; cur_bv="$(state_get '.bundle_version')"
+    log "updating: image $cur_img -> $IMAGE_TAG, bundles $cur_bv -> $BUNDLE_VERSION"
+    log "recorded products: $installed"
+    # Always re-pull + recreate: an image can be republished under the same
+    # tag, so a tag match alone doesn't mean nothing changed.
+    cmd_setup "$(tr ' ' ',' <<<"$installed")"
+}
+
+cmd_status() {
+    echo "container: $CONTAINER_NAME"
+    echo "mode: $([[ "$FULL_MODE" == 1 ]] && echo full || echo customer)"
+    echo "image tag (target):   $IMAGE_TAG"
+    echo "bundle version (target): $BUNDLE_VERSION"
+    echo "bundle source: $(state_get '.bundle_dir' | sed 's/^$/drive/')"
+    echo "ssh mounted: $(state_get '.ssh')"
+    echo "installed:"
+    jq -r '.products | to_entries[] | "  \(.key): image=\(.value.image_tag) bundle=\(.value.bundle_version) source=\(.value.bundle_source // "drive")"' "$STATE_FILE"
+    echo "mounts:"
+    echo "  $CQM_ROOT/workspace (default)"
+    jq -r '.mounts[]? | "  \(.)"' "$STATE_FILE"
+}
+
+cmd_version() { echo "cqm22x-setup: image=$IMAGE_TAG bundle=$BUNDLE_VERSION"; }
+
+# --- option parsing (options may appear anywhere on the command line) -----
+ALL_MOUNTS=()
+SSH_ENABLED=1
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --name)       CQM_NAME_SUFFIX="$2"; shift 2;;
+        --bundle-dir) BUNDLE_DIR="$2"; shift 2;;
+        -m)           mount_rp="$(realpath -e -- "$2" 2>/dev/null)" || die "-m $2: no such directory"
+                      ALL_MOUNTS+=("$mount_rp"); shift 2;;
+        --no-ssh)     SSH_ENABLED=0; shift;;
+        --ssh)        SSH_ENABLED=1; shift;;
+        --full)       FULL_MODE=1; shift;;
+        --customer)   FULL_MODE=0; shift;;
+        *)            ARGS+=("$1"); shift;;
+    esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+CONTAINER_NAME="${CONTAINER_BASE}_$(id -un)${CQM_NAME_SUFFIX:+_$CQM_NAME_SUFFIX}"
+CMD="${1:-}"
+
+# -h/--help/version need no state file at all.
+case "$CMD" in
+    -h|--help|"") usage; exit 0;;
+    version)      cmd_version; exit 0;;
+esac
+
+mkdir -p "$STATE_DIR"
+[[ -f "$STATE_FILE" ]] || echo '{"products":{},"image_tag":"","bundle_version":"","containers":[],"mounts":[],"ssh":true,"full":false}' > "$STATE_FILE"
+[[ -n "$BUNDLE_DIR" ]] || BUNDLE_DIR="$(state_get '.bundle_dir')"
+
+# fold in mounts/ssh flag remembered from a previous run.
+EXTRA_MOUNTS=("${ALL_MOUNTS[@]}")
+while IFS= read -r m; do [[ -n "$m" ]] && ALL_MOUNTS+=("$m"); done < <(jq -r '.mounts[]?' "$STATE_FILE")
+mapfile -t ALL_MOUNTS < <(printf '%s\n' "${ALL_MOUNTS[@]}" | sort -u | sed '/^$/d')
+if [[ "$SSH_ENABLED" == 1 ]]; then
+    saved_ssh="$(state_get '.ssh')"
+    [[ "$saved_ssh" == "false" ]] && SSH_ENABLED=0
+fi
+
+# --full/--customer win; otherwise reuse a previous setup's recorded mode.
+[[ -n "$FULL_MODE" ]] || { [[ "$(state_get '.full')" == "true" ]] && FULL_MODE=1 || FULL_MODE=0; }
+
+case "$CMD" in
+    setup)   shift; cmd_setup "$@";;
+    update)  shift; cmd_update "$@";;
+    status)  cmd_status;;
+    *) die "unknown command: $CMD (setup|update|status|version)";;
+esac

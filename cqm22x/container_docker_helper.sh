@@ -84,6 +84,11 @@ container_docker_helper.sh [options]
       --force-all also re-downloads the bundles (same as -R -F)
   -n: fetch and unpack the bundles only; do not create containers
 
+  env CQM_NAME_SUFFIX: append _<suffix> to the container name, e.g.
+      build_cqm22x_jammy_<user>_<suffix>[_<product>]. Empty by default (no
+      change to the old name) — set it to test or run a second, isolated
+      instance without touching your real container.
+
 BUNDLES
 
   Three archives, downloaded only when a selected product needs them:
@@ -274,9 +279,14 @@ for _p in $PRODUCTS; do components_for "$_p" >/dev/null; done
 # cqm220-3 is the default product and gets the plain container name, so it is
 # the one the setup output tells you to `docker start -i`.
 container_for() {
+    # CQM_NAME_SUFFIX defaults to empty, so container names are unchanged for
+    # anyone not setting it (old flow keeps working unchanged). Set it to run
+    # an isolated container namespace (e.g. tests) that cannot collide with a
+    # real build_cqm22x_jammy_$(whoami) container.
+    local sfx="${CQM_NAME_SUFFIX:+_$CQM_NAME_SUFFIX}"
     case "$1" in
-        cqm220-3) echo "${DOCKER_PRV_NAME}_${__USERNAME}";;
-        *)        echo "${DOCKER_PRV_NAME}_${__USERNAME}_$1";;
+        cqm220-3) echo "${DOCKER_PRV_NAME}_${__USERNAME}${sfx}";;
+        *)        echo "${DOCKER_PRV_NAME}_${__USERNAME}${sfx}_$1";;
     esac
 }
 
@@ -359,6 +369,15 @@ comp_dir()  {
 }
 comp_url()  { eval "printf '%s' \"\${URL_$1}\""; }
 comp_sha()  { eval "printf '%s' \"\${SHA_$1}\""; }
+# prebuilts (kernel-build clang/gcc/ndk/jdk/bazel): old bundles ship it under
+# qcom/<v>/prebuilts, new ones under openwrt/<v>/prebuilts (shared by qcom users).
+resolve_prebuilts_dir() {
+    local qdir="$1" odir
+    [ -d "$qdir/prebuilts" ] && { echo "$qdir/prebuilts"; return; }
+    odir="$(comp_dir openwrt)"
+    [ -d "$odir/prebuilts" ] && { echo "$odir/prebuilts"; return; }
+    echo ""
+}
 # Peak space each component needs: the archive plus what it unpacks to, since
 # the download is only deleted after a successful unpack.
 comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; esac; }
@@ -618,8 +637,11 @@ extract_archive() {
 }
 
 comp_required() {
+    # prebuilts is checked separately (resolve_prebuilts_dir): old qcom
+    # bundles have it, new ones don't (it moved to openwrt) — either is fine
+    # here, create_container is what actually enforces it's found somewhere.
     case "$1" in
-        qcom)    echo "qct/software sectools prebuilts";;
+        qcom)    echo "qct/software sectools";;
         yocto)   echo "downloads llvm-arm-toolchain-ship";;
         openwrt) echo "openwrt-prebuilt-backup";;
     esac
@@ -820,7 +842,7 @@ create_container() {
         run docker rm -f "$container" >/dev/null
     fi
 
-    local qcom_dir openwrt_dir yocto_dir
+    local qcom_dir openwrt_dir yocto_dir prebuilts_dir
 
     # Validate every bind source up front. Docker silently creates an empty
     # directory for a missing one, which turns a clear setup error into a
@@ -829,9 +851,12 @@ create_container() {
     case " $comps " in
         *" qcom "*)
             qcom_dir="$(comp_dir qcom)"
-            for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
+            for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools; do
                 [ -e "$qcom_dir/$pth" ] || missing+=("qcom:$pth")
             done
+            prebuilts_dir="$(resolve_prebuilts_dir "$qcom_dir")"
+            [ -n "$prebuilts_dir" ] \
+                || missing+=("qcom:prebuilts (checked $qcom_dir/prebuilts and $(comp_dir openwrt)/prebuilts)")
             ;;
     esac
     case " $comps " in
@@ -882,8 +907,8 @@ create_container() {
             -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
             -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
             -v "$qcom_dir/sectools:/pkg/sectools:ro"
-            -v "$qcom_dir/prebuilts:/pkg/prebuilts:ro"
         )
+        [ -n "${prebuilts_dir:-}" ] && args+=( -v "$prebuilts_dir:/pkg/prebuilts:ro" )
         [ -f "$qcom_dir/BUNDLE_VERSION" ]  && args+=( -v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
         [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
     fi
