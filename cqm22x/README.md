@@ -29,7 +29,93 @@ the selected products need, unpacks them once, creates one container per product
 and checks each environment. It is safe to re-run: a bundle already on disk is
 not downloaded again.
 
-Pick products with `-p`:
+## Docker v2 (`cqm22x-setup`)
+
+A newer, additive entry point, `cqm22x-setup`, for anyone starting fresh.
+Unlike `container_docker_helper.sh` above (still works exactly as before,
+one container per product), it creates **one container per user**,
+`build_cqm2xx_<user>`, holding every installed product, and made to mirror
+the host: same user name, uid/gid, groups, and `$HOME` — files a build writes
+into a mounted workspace come out owned by you, and paths behave the same
+inside and outside the container.
+
+```bash
+wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm22x/cqm22x-setup && chmod +x cqm22x-setup
+./cqm22x-setup setup              # all products, one container, no qcom (customer)
+./cqm22x-setup setup cqm211       # add a product; re-run later to add another
+./cqm22x-setup setup --full       # internal: also install Qualcomm tools (GitHub login, no password)
+./cqm22x-setup update             # image + bundles, in place, same mounts, same mode
+./cqm22x-setup status
+docker exec -it --user $(id -un) -e HOME=$HOME build_cqm2xx_$(whoami) bash -l
+```
+
+By default `setup` never fetches, stages or mounts anything Qualcomm — a
+customer gets a working openwrt/yocto build environment with no qcom bundle
+and no login prompt. `--full` (internal use) logs in to GitHub with a device
+code — access is `cavli-wireless` org membership, no password — and pulls
+the qcom bundle from a private release; the mode is remembered in the state
+file, so plain `setup`/`update` afterwards keep it without repeating the
+flag. `status` shows `mode: customer` or `mode: full`. In customer mode,
+`cqm-doctor` reports qcom checks as "not installed (customer install)"
+instead of failing, and a shell opened with `bash -l` prints a reminder that
+modem/tz/boot builds need the full install.
+
+Home inside is `$CQM_ROOT/home` (never your real one) bind-mounted at your
+host `$HOME` path; `~/.ssh` is mounted read-only at the same path by default
+(skipped if you don't have one, `--no-ssh` to turn it off). `-m <dir>`
+(repeatable) mounts an extra host directory at the same path — the default,
+always mounted, is `$CQM_ROOT/workspace`. Mounts and flags are remembered in
+the state file and reused by `update` and later `setup` runs.
+
+`CQM_ROOT` defaults to `$HOME/cqm22x`, so `$CQM_ROOT/workspace` (or an `-m`
+dir under it) sits inside the home bind mount; Docker auto-creates its
+mountpoint through that bind at container start, leaving an empty root-owned
+stub inside `$CQM_ROOT/home` — harmless, but `rm -rf $CQM_ROOT` then needs
+`sudo` for that one stub. Set `CQM_ROOT` outside `$HOME` to avoid it.
+
+`--full` runs a throwaway container from the same image (mounting your
+`$CQM_ROOT/home` and `$CQM_ROOT/qcom`) that checks `gh auth status` and, if
+needed, prints a device code and URL for `gh auth login --web` — open it in
+any browser, on any machine, works the same over SSH since nothing needs a
+browser on the host. It then downloads the qcom release, verifies
+`SHA256SUMS` and unpacks it. The GitHub token stays in
+`$CQM_ROOT/home/.config/gh` (mode 600) and is reused by later `update`s — not
+an org member, or no access, and it fails with one clear error and installs
+nothing. openwrt and yocto are public and need neither `--full` nor a login;
+their links are already in the script. Full walkthrough and the per-product
+links: the manifests repo's README (`cqm22x-manifests`, `cqm211-manifests`,
+`cqm212-manifests`).
+
+Already have the bundles on disk (offline, or no network)? `--bundle-dir
+<dir>` (or `CQM_BUNDLE_DIR`) reads `<dir>/<component>/` instead — same layout
+as the upload (files + `SHA256SUMS` + `BUNDLE_VERSION`), still checked
+against the pinned checksums. qcom is the plain per-file layout, no login
+needed:
+
+```bash
+./cqm22x-setup --bundle-dir /path/to/pkg-bundles setup --full cqm220-3
+```
+
+The directory is remembered in the state file, so a later `update` keeps
+using it.
+
+Everything under `/pkg/...` stays container-only and may differ from the
+host. The qcom bundle and the read-only openwrt/yocto toolchains are shared
+(identical regardless of which installed product uses them); the *writable*
+ccache and OpenWrt build_dir/staging_dir caches are namespaced per product —
+`/ccache/<product>` and `/pkg/openwrt/<product>` — so two openwrt products
+(cqm220-0/cqm220-3) sharing one container never share one ccache or build
+cache. Neither path is hardcoded by `set_openwrt_env.sh` or the build
+scripts, so this needs no build-script change: point `CCACHE_DIR` (and, if
+you use it, your build_dir/staging_dir symlink) at the `/<product>` subpath
+for whichever product you are building, e.g. `export
+CCACHE_DIR=/ccache/cqm220-0`.
+
+`cqm-doctor` inside a v2 container checks every installed product by
+default, or one: `docker exec --user $(id -un) build_cqm2xx_$(whoami)
+cqm-doctor cqm211`.
+
+Pick products with `-p` (old flow):
 
 ```bash
 # sdx35 (the default)
@@ -178,6 +264,8 @@ Sources live wherever `-w` points, mounted at `/work`.
 | `doctor.sh` | The environment contract, installed as `cqm-doctor` |
 | `cqmdev` | Optional day-to-day wrapper (`sync`, `shell`, `build`, `status`) |
 | `pack-bundle.sh` | Cavli-side: build and publish the qcom / yocto / openwrt bundles |
+| `cqm22x-setup` | Docker v2 — setup/update/status, all products by default |
+| `pack-qcom-release.sh` | Cavli-side: split qcom into a GitHub release layout (v2 `--full`) |
 
 ## Publishing a new toolchain bundle (Cavli only)
 
@@ -195,11 +283,21 @@ Each run stages that component's subtrees, writes `MANIFEST.txt` and a sampled
 `SHA256SUMS.spot`, compresses with zstd and uploads the archive with its
 checksum.
 
-- **qcom** — hand the resulting link and sha256 to each recipient; they pass
-  them to `-u` and `-c`. Never commit them.
+- **qcom (v1, `container_docker_helper.sh`)** — hand the resulting link and
+  sha256 to each recipient; they pass them to `-u` and `-c`. Never commit them.
 - **yocto**, **openwrt** — make the Drive files link-shareable, then put the
   links and checksums in `container_docker_helper.sh` (see `URL_yocto` /
   `URL_openwrt` near the top).
+- **qcom (v2, `cqm22x-setup --full`)** — private GitHub release, access via
+  `cavli-wireless` org membership:
+  ```bash
+  ./pack-qcom-release.sh --source /pkg-or-packed-qcom-dir --outdir /tmp/qcom-release
+  GH_TOKEN=$(gh auth token --user khoacavli) gh release create qcom-1.1.0 \
+      /tmp/qcom-release/* -R cavli-wireless/cqm2xx-qcom-bundles
+  ```
+  Tag = bundle version (`qcom-<version>`); files over 1.9 GiB are split into
+  parts by `pack-qcom-release.sh`, with `SHA256SUMS` covering the parts and
+  the untouched whole files.
 
 Compression level defaults per component: 15 for qcom, which is raw binaries
 and compresses about 4:1, and 1 for the other two, whose payload is already

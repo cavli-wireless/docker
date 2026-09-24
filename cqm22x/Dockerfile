@@ -23,10 +23,15 @@ ARG PYTHON36_VERSION=3.6.9
 ARG PYTHON36_SHA256=47fc92a1dcb946b9ed0abc311d3767b7215c54e655b17fd1d3f9b538195525aa
 ARG PYTHON38_VERSION=3.8.12
 ARG PYTHON38_SHA256=316aa33f3b7707d041e73f246efedb297a70898c4b91f127f66dc8d80c596f1a
+ARG PYTHON312_VERSION=3.12.14
+ARG PYTHON312_SHA256=6c6df908d2c3fd24e6d76869e92542abd0f33aec9dfc18df8875f89660286d43
 ARG DTC_VERSION=1.6.0
 ARG DTC_SHA256=3d15dee7126a6c4a015ab47ec908cab13e39774b0315efaaebb223cb4a4d349c
 ARG RCLONE_VERSION=1.65.2
 ARG RCLONE_SHA256=2155ea2c225272a6f78b2aa4547bb587c40b007586e73b41b31c59edba64f8fe
+ARG NANOPB_VERSION=0.4.8
+ARG NANOPB_SHA256=0a111c1f4fd6a318805c7b9f4e2b5f59196aa97e4d0ea6a81bc8bad95c728398
+ARG GH_CLI_VERSION=2.101.0
 # The repo launcher is re-published in place by Google from time to time.
 # When that happens this build fails loudly (which is the point) — verify the
 # new file, then bump this value in one place.
@@ -44,16 +49,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 #    the resulting interpreter has no _ctypes module.
 #    chrpath cpio diffstat: bitbake HOSTTOOLS (cqm211/yocto) refuses to start
 #    without them.
+#    liblzo2-2: mkfs.ubifs (meta, all products) links against liblzo2.so.2.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bison boxes build-essential ca-certificates chrpath clang cpio curl \
         dh-autoreconf diffstat \
         file flex g++ g++-10 g++-multilib gawk gcc-10 gcc-multilib gettext git \
-        git-lfs gnupg libcurl4-gnutls-dev libexpat1-dev libffi-dev libncurses5 \
-        libncurses5-dev libssl-dev libxml-parser-perl libyaml-dev libz-dev \
-        locales p7zip-full pigz pkg-config python3-dev python3-pip \
-        python3-setuptools python3-venv rsync ssh-client sudo swig tzdata \
-        unzip uuid-dev vim wget xz-utils zlib1g-dev zstd \
+        git-lfs gnupg libcurl4-gnutls-dev libexpat1-dev libffi-dev liblzo2-2 \
+        libncurses5 libncurses5-dev libssl-dev libxml-parser-perl libyaml-dev \
+        libz-dev locales p7zip-full pigz pkg-config python3-dev python3-pip \
+        python3-setuptools python3-venv rsync squashfs-tools ssh-client sudo \
+        swig tzdata unzip uuid-dev vim wget xz-utils zip zlib1g-dev zstd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -130,14 +136,35 @@ RUN for v in 3.6 3.8; do \
 # Each old interpreter needs its own bootstrap: the generic get-pip.py now
 # refuses to run on anything below 3.10, and pypa keeps per-version copies
 # under /pip/<version>/ precisely for this case.
+# future: modem/meta (python3.8, see the interpreter map above) import
+# `past`, which ships inside the `future` package.
 RUN cd /tmp \
     && curl -fsSL https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip36.py \
     && curl -fsSL https://bootstrap.pypa.io/pip/3.8/get-pip.py -o get-pip38.py \
     && curl -fsSL https://bootstrap.pypa.io/get-pip.py          -o get-pip310.py \
     && python3.6  get-pip36.py  && python3.6  -m pip install --no-cache-dir virtualenv pyyaml \
-    && python3.8  get-pip38.py  && python3.8  -m pip install --no-cache-dir virtualenv pyyaml \
+    && python3.8  get-pip38.py  && python3.8  -m pip install --no-cache-dir virtualenv pyyaml future \
     && python3.10 get-pip310.py && python3.10 -m pip install --no-cache-dir virtualenv pyyaml \
     && rm -f get-pip36.py get-pip38.py get-pip310.py
+
+# ---------------------------------------------------------------------------
+# 4b. python3.12 (build_helper.sh, cqm212) — altinstall only, no python3/
+#     python alternative change; test/idle/tkinter/debug syms stripped.
+# ---------------------------------------------------------------------------
+RUN cd /tmp \
+    && curl -fsSLO "https://www.python.org/ftp/python/${PYTHON312_VERSION}/Python-${PYTHON312_VERSION}.tgz" \
+    && echo "${PYTHON312_SHA256}  Python-${PYTHON312_VERSION}.tgz" | sha256sum -c - \
+    && tar -xf "Python-${PYTHON312_VERSION}.tgz" \
+    && cd "Python-${PYTHON312_VERSION}" \
+    && ./configure --prefix=/usr --enable-optimizations --with-ensurepip=install \
+    && make -j"$(nproc)" && make altinstall \
+    && cd /tmp && rm -rf "Python-${PYTHON312_VERSION}" "Python-${PYTHON312_VERSION}.tgz" \
+    && rm -rf /usr/lib/python3.12/test /usr/lib/python3.12/idlelib \
+              /usr/lib/python3.12/tkinter /usr/lib/python3.12/lib-dynload/_tkinter*.so \
+              /usr/lib/python3.12/config-3.12-*/libpython3.12.a \
+    && find /usr/lib/python3.12 -depth -name __pycache__ -exec rm -rf {} + \
+    && strip --strip-unneeded /usr/bin/python3.12 /usr/lib/libpython3.12.so.1.0 \
+             /usr/lib/python3.12/lib-dynload/*.so 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 5. Default python / python3 = 3.8.
@@ -183,6 +210,28 @@ RUN cd /tmp \
     && unzip -q "rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
     && install -m 0755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
     && rm -rf "rclone-v${RCLONE_VERSION}-linux-amd64" "rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+
+# gh — official apt repo, version pinned. Used by cqm22x-setup --full to log
+# in with a device code and pull the qcom bundle from a private release.
+RUN mkdir -p -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+           > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 6b. nanopb — small, unlicensed, baked in. Vendored (not curl): jpa.kapsi.fi
+#     stalls mid-download from inside the build network.
+# ---------------------------------------------------------------------------
+COPY vendor/nanopb-${NANOPB_VERSION}-linux-x86.tar.gz /tmp/
+RUN cd /tmp \
+    && echo "${NANOPB_SHA256}  nanopb-${NANOPB_VERSION}-linux-x86.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/nanopb \
+    && tar -xzf "nanopb-${NANOPB_VERSION}-linux-x86.tar.gz" -C /opt/nanopb --strip-components=1 \
+    && rm -f "nanopb-${NANOPB_VERSION}-linux-x86.tar.gz"
+ENV NANOPB_DIR=/opt/nanopb
 
 # ---------------------------------------------------------------------------
 # 7. /bin/sh -> bash.
