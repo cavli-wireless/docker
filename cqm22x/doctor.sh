@@ -25,6 +25,7 @@ EXPECT_LANG=en_US.UTF-8
 # not dash — parts of the vendor build rely on bashisms in `sh` scripts.
 EXPECT_SH=bash
 EXPECT_DTC_VERSION="DTC 1.6.0"
+EXPECT_GH_VERSION=2.101.0
 # sha256 of the reference fixture compiled by dtc — verified byte-identical
 # between dtc 1.6.0 and the 1.6.0-g183df9e9 build used on the CI host.
 EXPECT_DTB_SHA=f97ab6a0c0a70458a18b83dcd2f86380aa46ba188fc5d5baaf6f5c435e20c2ed
@@ -51,22 +52,23 @@ fi
 YOCTO_VERSION="$( [[ -r /pkg/YOCTO_VERSION ]] && cat /pkg/YOCTO_VERSION || echo "not mounted" )"
 OPENWRT_VERSION="$( [[ -r /pkg/OPENWRT_VERSION ]] && cat /pkg/OPENWRT_VERSION || echo "not mounted" )"
 
-# Which userspace this product builds decides which bundles have to be present.
-# The container carries CQM_PRODUCT from `docker run -e`, which `docker exec`
-# inherits; when it is absent, fall back to whatever is actually mounted so a
-# hand-started container still gets checked rather than silently skipped.
-PRODUCT="${CQM_PRODUCT:-}"
-if [[ -z "$PRODUCT" ]]; then
-    if [[ -d /pkg/yocto/llvm-arm-toolchain-ship ]]; then PRODUCT=cqm211
-    else PRODUCT=cqm220-3; fi
-fi
+# v2 (one container, several products) exports CQM_PRODUCTS (comma list);
+# the older per-product flow exports plain CQM_PRODUCT.
+# CQM_FULL (static -e, visible from `docker exec` too): customer install has
+# no qcom bundle by design. Unset defaults to full (older/legacy containers).
+CUSTOMER_MODE=no
+[[ "${CQM_FULL:-1}" == 0 ]] && CUSTOMER_MODE=yes
+
+check_product() {
+local PRODUCT="$1"
 # sdk = application-SDK container: OpenWrt packages only, no kernel, no abl
 # signing, so the qcom bundle (and its dtc) is not expected there.
 WANT_QCOM=yes
 case "$PRODUCT" in
-    cqm211) WANT_YOCTO=yes; WANT_OPENWRT=no;;
-    sdk)    WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
-    *)      WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+    cqm211)  WANT_YOCTO=yes; WANT_OPENWRT=no;;
+    cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=no;;   # qcom-only, no openwrt/yocto bundle
+    sdk)     WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
+    *)       WANT_YOCTO=no;  WANT_OPENWRT=yes;;
 esac
 
 echo
@@ -87,7 +89,23 @@ check "python3.6"        "$EXPECT_PY36"       "$(pyver python3.6)"
 check "python3.8"        "$EXPECT_PY38"       "$(pyver python3.8)"
 p310="$(pyver python3.10)"
 check "python3.10"       "$EXPECT_PY310_MAJOR" "${p310%.*}"
+# cqm212 (Kobuk) build_helper.sh accepts PL_PY="python3.12 python3.11", but we
+# only build 3.12 — not the default python3/python (stays 3.8).
+v="3.12"
+if command -v "python$v" >/dev/null 2>&1; then
+    tmpv="$(mktemp -d)"
+    if "python$v" -m venv "$tmpv/v" 2>/dev/null && "$tmpv/v/bin/pip" --version >/dev/null 2>&1; then
+        ok "python$v venv+pip" "$("python$v" -c 'import platform;print(platform.python_version())')"
+    else
+        bad "python$v venv+pip" "venv creatable, pip working" "failed"
+    fi
+    rm -rf "$tmpv"
+else
+    bad "python$v" "present" "missing"
+fi
 if python3 -c 'import ctypes' 2>/dev/null; then ok "python3 _ctypes"; else bad "python3 _ctypes" "importable" "ImportError"; fi
+# modem/meta build under python3.8 and import `past` (from the `future` package).
+if python3.8 -c 'import past' 2>/dev/null; then ok "python3.8 past (future pkg)"; else bad "python3.8 past (future pkg)" "importable" "ModuleNotFoundError"; fi
 
 # ---- 2. host compiler and shell -------------------------------------------
 echo
@@ -100,6 +118,15 @@ check "LANG"     "$EXPECT_LANG" "${LANG:-unset}"
 for t in chrpath cpio diffstat; do
     if command -v "$t" >/dev/null 2>&1; then ok "host tool" "$t"; else bad "host tool" "$t" "missing"; fi
 done
+# mkfs.ubifs (meta, all products) links against this.
+if ldconfig -p | grep -q liblzo2.so.2; then ok "liblzo2.so.2"; else bad "liblzo2.so.2" "resolvable" "missing"; fi
+# cqm212 packaging step shells out to zip.
+if command -v zip >/dev/null 2>&1; then ok "host tool" "zip"; else bad "host tool" "zip" "missing"; fi
+# cqm212 meta unpacks the wlan qcn9224 squashfs image via unsquash.py -> unsquashfs.
+if command -v unsquashfs >/dev/null 2>&1; then ok "host tool" "unsquashfs"; else bad "host tool" "unsquashfs" "missing"; fi
+
+if [[ -d /opt/nanopb ]]; then ok "nanopb" "/opt/nanopb"; else bad "nanopb" "/opt/nanopb" "missing"; fi
+check "gh" "$EXPECT_GH_VERSION" "$(gh --version 2>/dev/null | head -1 | awk '{print $3}')"
 
 # ---- 3. dtc: version and, more importantly, output ------------------------
 echo
@@ -107,6 +134,8 @@ echo "device tree compiler"
 dtc_bin=/pkg/qct/software/boottools/dtc
 if [[ "$WANT_QCOM" == no ]]; then
     note "dtc" "not needed for sdk (qcom bundle not mounted)"
+elif [[ "$CUSTOMER_MODE" == yes ]]; then
+    note "dtc" "not installed (customer install)"
 elif [[ -x "$dtc_bin" ]]; then
     check "dtc version" "$EXPECT_DTC_VERSION" "$("$dtc_bin" --version 2>&1 | head -1 | sed 's/^Version: //')"
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -151,7 +180,10 @@ echo "qcom bundle (/pkg)"
 if [[ "$WANT_QCOM" == no ]]; then
     note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
 fi
-if [[ "$WANT_QCOM" == yes ]]; then
+if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == yes ]]; then
+    note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cqm22x-setup setup --full"
+fi
+if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == no ]]; then
 for p in /pkg/qct/software/HEXAGON_Tools /pkg/qct/software/llvm/release/arm \
          /pkg/qct/software/arm/linaro-toolchain /pkg/sectools/v2/latest/Linux \
          /pkg/prebuilts/clang; do
@@ -226,15 +258,40 @@ if [[ "$WANT_YOCTO" == yes ]]; then
 fi
 
 # ---- 6. writable caches and workspace -------------------------------------
+# v2 namespaces these per product (/ccache/<p>, /pkg/openwrt/<p>); the older
+# per-product flow uses the bare paths. Check whichever this container has.
 echo
 echo "caches"
-cache_paths=(/ccache /work)
-[[ "$WANT_OPENWRT" == yes ]] && cache_paths+=(/pkg/openwrt)
+cache_paths=()
+if [[ -d "/ccache/$PRODUCT" ]]; then cache_paths+=("/ccache/$PRODUCT"); else cache_paths+=(/ccache); fi
+[[ -d /work ]] && cache_paths+=(/work)
+if [[ "$WANT_OPENWRT" == yes ]]; then
+    if [[ -d "/pkg/openwrt/$PRODUCT" ]]; then cache_paths+=("/pkg/openwrt/$PRODUCT"); else cache_paths+=(/pkg/openwrt); fi
+fi
 # bitbake writes into DL_DIR whenever a recipe needs something the bundle did
 # not carry, so this one has to be writable even though it ships prefilled.
 [[ "$WANT_YOCTO" == yes ]] && cache_paths+=(/pkg/yocto/downloads)
 for p in "${cache_paths[@]}"; do
     if [[ -w "$p" ]]; then ok "writable" "$p"; else bad "writable" "$p" "not writable"; fi
+done
+}  # check_product
+
+# Product(s) to check: arg, else CQM_PRODUCT/CQM_PRODUCTS, else guess.
+products=()
+if [[ -n "${1:-}" ]]; then
+    products=("$1")
+elif [[ -n "${CQM_PRODUCT:-}" ]]; then
+    products=("$CQM_PRODUCT")
+elif [[ -n "${CQM_PRODUCTS:-}" ]]; then
+    IFS=',' read -ra products <<< "$CQM_PRODUCTS"
+elif [[ -d /pkg/yocto/llvm-arm-toolchain-ship ]]; then
+    products=(cqm211)
+else
+    products=(cqm220-3)
+fi
+
+for product in "${products[@]}"; do
+    check_product "$product"
 done
 
 # ---- 7. identity -----------------------------------------------------------
