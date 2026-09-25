@@ -1,5 +1,8 @@
 # CQM22x — build environment guide
 
+This covers the per-product `container_docker_helper.sh` flow below. For the
+newer one-container-per-user setup, see `cqm22x-setup` in `README.md`.
+
 From a bare machine to a firmware image, for all three product lines:
 
 | Product | Chip | Userspace |
