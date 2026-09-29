@@ -233,12 +233,13 @@ fi  # WANT_QCOM
 if [[ "$WANT_OPENWRT" == yes ]]; then
     echo
     echo "openwrt bundle ($PRODUCT)"
-    if [[ -d /pkg/openwrt-prebuilt-backup ]]; then
+    ow_cache="${OPENWRT_PREBUILT_CACHE_DIR:-/pkg/openwrt-prebuilt-backup}"
+    if [[ -d "$ow_cache" ]]; then
         # Without this the first app build compiles gcc/binutils/musl from
         # source — hours instead of an extract. It is not fatal, so it warns.
-        n="$(ls -1 /pkg/openwrt-prebuilt-backup/*.tar.zst 2>/dev/null | wc -l)"
+        n="$(ls -1 "$ow_cache"/*.tar.zst 2>/dev/null | wc -l)"
         if (( n > 0 )); then ok "prebuilt cache" "$n archive(s)"
-        else note "prebuilt cache" "/pkg/openwrt-prebuilt-backup holds no .tar.zst"; fi
+        else note "prebuilt cache" "$ow_cache holds no .tar.zst"; fi
     else
         note "prebuilt cache" "not mounted — the first app build will compile tool/toolchain from scratch"
     fi

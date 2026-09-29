@@ -31,6 +31,10 @@ prebuilts.tar.zst ed17b3427b6dc08535a346503254a5ab34fcf55e8d6e9aa62552d4fd43d6d2
 openwrt-prebuilt-backup.tar 5a53f1289127c9ec8b7542bd16fe0305f8bf51bfcdca779f0f622c8dcc54577e 1qRP8rTwhfLwu43jVsz7bvn0g94z2A-Tl
 openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7455447b2ce6703ae 1yfF85EiRpDeS4yRi8ccDtRLdki5OnDKL
 '
+# cqm212's OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
+BUNDLE_FILES_openwrt212='
+cqm22x-openwrt212-1.1.0.tar.zst f78de623fa5e6734e29ed3778a77fa80126518b71672d4a8b4bd07b5bf7651c3 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
+'
 BUNDLE_FILES_yocto='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
 llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878111e95e16d2bd7ad 1Rb9k9CsZ2u7kHVpPzIL8ytcq7tygqidz
@@ -125,7 +129,7 @@ drive_fetch() {
 }
 
 prestage_component() {
-    # $1 = component (openwrt|yocto|buildroot), $2 = newline "name sha256 id" list,
+    # $1 = component (openwrt|openwrt212|yocto|buildroot), $2 = newline "name sha256 id" list,
     # $3 = dest (default $CQM_ROOT/$1/$BUNDLE_VERSION). Unpacks there, marks .complete.
     local component="$1" files="$2" dest="${3:-$CQM_ROOT/$1/$BUNDLE_VERSION}" stage src_dir=""
     [[ -f "$dest/.complete" && "$(cat "$dest/BUNDLE_VERSION" 2>/dev/null)" == "$BUNDLE_VERSION" ]] \
@@ -357,10 +361,11 @@ build_run_args() {
 
     RUN_ARGS+=(-e "CQM_FULL=$FULL_MODE")
 
-    local need_qcom=no need_openwrt=no need_yocto=no p
+    local need_qcom=no need_openwrt=no need_openwrt212=no need_yocto=no p
     for p in $products; do
         case "$p" in cqm220-0|cqm220-3|cqm211|cqm212) need_qcom=yes;; esac
         case "$p" in cqm220-0|cqm220-3) need_openwrt=yes;; esac
+        case "$p" in cqm212) need_openwrt212=yes;; esac
         case "$p" in cqm211) need_yocto=yes;; esac
     done
 
@@ -383,6 +388,10 @@ build_run_args() {
         local openwrt_dir="$CQM_ROOT/openwrt/$BUNDLE_VERSION"
         RUN_ARGS+=(-v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro")
         [[ -f "$openwrt_dir/BUNDLE_VERSION" ]] && RUN_ARGS+=(-v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro")
+    fi
+    if [[ "$need_openwrt212" == yes ]]; then
+        RUN_ARGS+=(-v "$CQM_ROOT/openwrt212/$BUNDLE_VERSION/openwrt-prebuilt-backup:/pkg/cqm212-openwrt-prebuilt:ro"
+                   -e "OPENWRT_PREBUILT_CACHE_DIR=/pkg/cqm212-openwrt-prebuilt")
     fi
     if [[ "$need_yocto" == yes ]]; then
         local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
@@ -431,6 +440,7 @@ cmd_setup() {
             cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
+            cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212";;
         esac
     done
 
