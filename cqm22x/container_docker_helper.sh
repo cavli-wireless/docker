@@ -182,10 +182,7 @@ LOCAL_USER_IMAGE=no
 # abl signing) and therefore need only the openwrt bundle. It is never part
 # of 'all'.
 #
-# cqm212 is also kept out of 'all' for now: it has no published openwrt212
-# link yet (T052.6 packs and tests locally; the owner uploads separately), so
-# folding it into 'all' would break every existing "-p all" run with a bundle
-# nobody can fetch. Ask for it explicitly with "-p cqm212" until then.
+# cqm212 is kept out of 'all'; ask for it with "-p cqm212".
 ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211"
 components_for() {
     case "$1" in
@@ -225,13 +222,9 @@ URL_yocto="${CQM_YOCTO_URL:-https://drive.google.com/file/d/1V5Mnrdh4dxf4-ribimC
 SHA_yocto="${CQM_YOCTO_SHA256:-d32d303ebc47a1ce9fb6fb9a2494b3c9c16741d95502e28eb6b1132600ed7c06}"
 URL_openwrt="${CQM_OPENWRT_URL:-https://drive.google.com/file/d/1sPOzmaDvJBZ4rASOLVJphqs6u0FmY8MZ/view?usp=sharing}"
 SHA_openwrt="${CQM_OPENWRT_SHA256:-cdf8f8e3ece1619a32e8ae948f0aee2f5eecf0467b65d5590026c5d235384405}"
-# cqm212's own OpenWrt cache (aarch64 gcc-13.3.0 musl) — not interchangeable
-# with the arm one above. No link is built in yet: it is public like the two
-# above, but this bundle has not been packed and uploaded by the owner yet
-# (T052.6 packs and restore-tests it locally only). Set CQM_OPENWRT212_URL to
-# a local mirror in the meantime, or fill these in once the real link exists.
-URL_openwrt212="${CQM_OPENWRT212_URL:-}"
-SHA_openwrt212="${CQM_OPENWRT212_SHA256:-}"
+# cqm212's own OpenWrt cache (aarch64 gcc-13.3.0 musl), not interchangeable with openwrt.
+URL_openwrt212="${CQM_OPENWRT212_URL:-https://drive.google.com/file/d/1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn/view?usp=sharing}"
+SHA_openwrt212="${CQM_OPENWRT212_SHA256:-f78de623fa5e6734e29ed3778a77fa80126518b71672d4a8b4bd07b5bf7651c3}"
 KEEP_ARCHIVE=no
 FORCE_FETCH=no
 EXTRA_MOUNTS=()
@@ -410,10 +403,8 @@ resolve_prebuilts_dir() {
     echo ""
 }
 # Peak space each component needs: the archive plus what it unpacks to, since
-# the download is only deleted after a successful unpack. openwrt212's number
-# is an estimate (same order of magnitude as openwrt) until a real bundle has
-# been packed and measured.
-comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; openwrt212) echo 15;; esac; }
+# the download is only deleted after a successful unpack.
+comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; openwrt212) echo 5;; esac; }
 
 count=0
 [[ -n "$PKG_URL" ]]        && count=$((count+1))
@@ -956,15 +947,15 @@ create_container() {
         [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
     fi
 
-    # OpenWrt's own prebuilt tool/toolchain cache. set_openwrt_env.sh finds it
-    # here by default and restores it automatically on the first app build,
-    # instead of compiling gcc/binutils/musl from scratch. cqm220-0/3 and
-    # cqm212 mount two different bundles (openwrt / openwrt212) at this exact
-    # same path -- never both at once, since each product gets its own
-    # container -- so the default cache path in set_openwrt_env.sh does not
-    # need to vary per product.
+    # OpenWrt prebuilt tool/toolchain cache, restored on the first app build.
+    # cqm212 reads its own path via OPENWRT_PREBUILT_CACHE_DIR.
     if [ -n "${openwrt_dir:-}" ]; then
-        args+=( -v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro" )
+        local ow_pkg=/pkg/openwrt-prebuilt-backup
+        case " $comps " in *" openwrt212 "*)
+            ow_pkg=/pkg/cqm212-openwrt-prebuilt
+            args+=( -e "OPENWRT_PREBUILT_CACHE_DIR=$ow_pkg" );;
+        esac
+        args+=( -v "$openwrt_dir/openwrt-prebuilt-backup:$ow_pkg:ro" )
         [ -f "$openwrt_dir/BUNDLE_VERSION" ] && args+=( -v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro" )
     fi
 
