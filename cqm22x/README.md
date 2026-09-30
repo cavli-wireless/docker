@@ -11,7 +11,7 @@ Covers four product lines from one image:
 | `cqm220-3` | sdx35 | OpenWrt | qcom + openwrt |
 | `cqm220-0` | sdx32 | OpenWrt | qcom + openwrt |
 | `cqm211` | sdx61/62/65 | Yocto | qcom + yocto |
-| `cqm212` | sdx85/Kobuk | OpenWrt | qcom + openwrt212 (not part of `-p all` yet) |
+| `cqm212` | sdx85/Kobuk | OpenWrt | qcom + openwrt212 + kprebuilts212 (not part of `-p all` yet) |
 
 ## Quick start
 
@@ -175,7 +175,8 @@ One public image plus several bundles, deliberately kept apart:
 | **qcom** | HEXAGON, LLVM, linaro, sectools, prebuilts | ~13 GB packed, ~60 GB unpacked | every product | supplied by Cavli, mounted read-only |
 | **yocto** | bitbake `DL_DIR` cache + LLVM/ARM toolchain | ~24 GB packed, ~27 GB unpacked | cqm211 | link built into the setup script |
 | **openwrt** | OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) | ~2.3 GB packed, ~10 GB unpacked | cqm220-0/3 | link built into the setup script |
-| **openwrt212** | Same, for aarch64 gcc-13.3.0 musl | packed size TBD | cqm212 | link built into the setup script once packed and published |
+| **openwrt212** | Same, for aarch64 gcc-13.3.0 musl | 1.4 GB packed | cqm212 | link built into the setup script |
+| **kprebuilts212** | kernel clang/rust/build-tools from public CodeLinaro, at `/pkg/prebuilts-kobuk` | 1.7 GB packed, 6.8 GB unpacked | cqm212, on by default (`--no-kernel-prebuilts` skips it) | link built into the setup script |
 
 Nothing licensed is in the image, because it is published publicly — and nobody
 can pull a 50 GB image anyway. Splitting also means a toolchain update does not
@@ -260,6 +261,7 @@ $HOME/cqm22x                     (override with -r)
 ├── yocto/<version>/             cqm211 only — downloads/, llvm-arm-toolchain-ship/
 ├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/ (arm gcc-11.2)
 ├── openwrt212/<version>/        cqm212 only — openwrt-prebuilt-backup/ (aarch64 gcc-13.3.0 musl)
+├── kprebuilts212/<version>/     cqm212 only — prebuilts-kobuk/ (kernel clang/rust/build-tools)
 ├── buildroot/                   /pkg/buildroot — toolchain/ (ro), dl/, ccache/; bundle via setup
 └── cache/
     ├── cqm220-3/{openwrt,ccache}

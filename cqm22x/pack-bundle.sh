@@ -37,6 +37,10 @@
 #              build scripts. Pack it from a CQM212 build host's /pkg, never
 #              from a cqm220 one.
 #
+#   kprebuilts212 prebuilts-kobuk: cqm212 kernel_platform/prebuilts (clang,
+#              rust, build-tools...) as synced from public CodeLinaro, .git
+#              dropped. --map prebuilts-kobuk=<...>/kernel_platform/prebuilts
+#
 # Splitting means a cqm220 developer never downloads the 27 GB of yocto cache,
 # and a cqm211 developer never downloads an OpenWrt one. Everyone still needs
 # qcom, which is why it stays a component of its own rather than being merged
@@ -66,7 +70,7 @@ REMOTE_DIR="${CQM_BUNDLE_REMOTE_DIR:-/cqm22x-buildenv/toolchain}"
 # CQM212 build box, not a cqm220 one) and has no place in a routine "pack
 # everything from this /pkg" run. Pack it explicitly with --component openwrt212.
 ALL_COMPONENTS=(qcom yocto openwrt)
-KNOWN_COMPONENTS=("${ALL_COMPONENTS[@]}" openwrt212)
+KNOWN_COMPONENTS=("${ALL_COMPONENTS[@]}" openwrt212 kprebuilts212)
 
 log()  { printf '\e[36m==>\e[0m %s\n' "$*"; }
 die()  { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
@@ -80,7 +84,7 @@ usage() {
 cat <<EOF
 pack-bundle.sh --component C --version V [options]
 
-  --component C      qcom | yocto | openwrt | openwrt212 | all   (repeatable)
+  --component C      qcom | yocto | openwrt | openwrt212 | kprebuilts212 | all   (repeatable)
   --version V        bundle version, e.g. 1.1.0            (required)
   --source DIR       /pkg tree to pack from                (default $SOURCE)
   --map REL=DIR      take REL from DIR instead of \$SOURCE/REL (repeatable)
@@ -104,6 +108,8 @@ COMPONENTS
               cqm220-0/3 (sdx35/32) only — public
   openwrt212  openwrt-prebuilt-backup (aarch64 gcc-13.3.0 musl)
               cqm212 (sdx85/Kobuk) only — public, not part of --component all
+  kprebuilts212 prebuilts-kobuk (kernel clang/rust/build-tools, .git dropped)
+              cqm212 only — public CodeLinaro, not part of --component all
 
 Staging defaults to a directory beside the output rather than /tmp: the qcom
 tree is around 50 GB, and /tmp is frequently a tmpfs sized well below that.
@@ -150,8 +156,8 @@ expanded=()
 for c in "${COMPONENTS[@]}"; do
     case "$c" in
         all)                          expanded+=("${ALL_COMPONENTS[@]}");;
-        qcom|yocto|openwrt|openwrt212) expanded+=("$c");;
-        *) die "unknown component: $c (expected qcom, yocto, openwrt, openwrt212 or all)";;
+        qcom|yocto|openwrt|openwrt212|kprebuilts212) expanded+=("$c");;
+        *) die "unknown component: $c (expected qcom, yocto, openwrt, openwrt212, kprebuilts212 or all)";;
     esac
 done
 # De-duplicate while keeping the declared order. Iterates KNOWN_COMPONENTS
@@ -183,6 +189,7 @@ INCLUDE_openwrt=(openwrt-prebuilt-backup)
 # this path, not by component name, so the *.tar exclusion applies to both
 # without repeating it.
 INCLUDE_openwrt212=(openwrt-prebuilt-backup)
+INCLUDE_kprebuilts212=(prebuilts-kobuk)
 
 declare -A SRCREL=(
     [downloads]=yocto/downloads
@@ -193,6 +200,7 @@ declare -A SRCREL=(
 # payload twice. Ship only the compressed copies; restore prefers them anyway.
 declare -A EXCLUDE_FROM=(
     [openwrt-prebuilt-backup]='--exclude=*.tar'
+    [prebuilts-kobuk]='--exclude=.git'
 )
 
 # The qcom tree is raw binaries and compresses about 4:1, so it is worth a slow
@@ -203,7 +211,7 @@ declare -A EXCLUDE_FROM=(
 zstd_level() {
     [[ -n "$ZSTD_LEVEL" ]] && { echo "$ZSTD_LEVEL"; return; }
     case "$1" in
-        qcom) echo 15;;
+        qcom|kprebuilts212) echo 15;;
         *)    echo 1;;
     esac
 }
@@ -214,6 +222,7 @@ component_blurb() {
         yocto)      echo "Yocto download cache and LLVM/ARM toolchain — cqm211 (sdx61/62/65)";;
         openwrt)    echo "OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) — cqm220-0/3 (sdx35/32)";;
         openwrt212) echo "OpenWrt prebuilt host tools and cross toolchain (aarch64 gcc-13.3.0 musl) — cqm212 (sdx85/Kobuk)";;
+        kprebuilts212) echo "Kernel build prebuilts (clang, rust, build-tools) from public CodeLinaro — cqm212 (sdx85/Kobuk)";;
     esac
 }
 
@@ -240,7 +249,7 @@ Pass --map $p=<dir> if it lives somewhere else on this host."
     # would wave through a copy that does not fit.
     local need_kb=0 have_kb
     for p in "${includes[@]}"; do
-        need_kb=$(( need_kb + $(du -skL "${src_of[$p]}" | cut -f1) ))
+        need_kb=$(( need_kb + $( { du -skL "${src_of[$p]}" 2>/dev/null || true; } | cut -f1) ))
     done
     have_kb="$(df -Pk "$STAGE_DIR" | awk 'NR==2{print $4}')"
     log "staging needs $(( need_kb / 1024 / 1024 )) GB, $STAGE_DIR has $(( have_kb / 1024 / 1024 )) GB free"
@@ -314,7 +323,7 @@ Pass --map $p=<dir> if it lives somewhere else on this host."
     log "sampling $SPOT_COUNT files for SHA256SUMS.spot"
     (
         cd "$STAGE"
-        if [[ "$component" == qcom ]]; then
+        if [[ "$component" == qcom || "$component" == kprebuilts212 ]]; then
             find "${includes[@]}" -type f \( -perm -u+x -o -name '*.so*' \) 2>/dev/null
         else
             find "${includes[@]}" -type f 2>/dev/null

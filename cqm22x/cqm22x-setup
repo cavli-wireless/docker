@@ -33,7 +33,11 @@ openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7
 '
 # cqm212's OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
 BUNDLE_FILES_openwrt212='
-cqm22x-openwrt212-1.1.0.tar.zst f78de623fa5e6734e29ed3778a77fa80126518b71672d4a8b4bd07b5bf7651c3 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
+cqm22x-openwrt212-1.1.0.tar.zst 632498311a059279169e45c19e88c4778cde1929b6defa58c16093e741a96dbf 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
+'
+# cqm212 kernel_platform/prebuilts (public CodeLinaro), mounted at /pkg/prebuilts-kobuk.
+BUNDLE_FILES_kprebuilts212='
+cqm22x-kprebuilts212-1.1.0.tar.zst 98f491651943733c661bac387ca56a59657f9ee2c40a23b71a579ad5271b10e8 UPLOAD_PENDING
 '
 BUNDLE_FILES_yocto='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
@@ -75,6 +79,7 @@ cqm22x-setup — set up and manage the CQM2xx build container.
   --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default).
   --full / --customer     do / don't install Qualcomm tools (GitHub device login).
   --no-buildroot          cqm220-0/3: skip the Buildroot toolchain + dl bundle.
+  --no-kernel-prebuilts   cqm212: skip the kernel prebuilts bundle (synced from CodeLinaro on build).
   -h, --help              this text.
 
 Everything lives under \$CQM_ROOT (default ~/cqm22x); container name:
@@ -114,10 +119,11 @@ state_merge() {
        --arg cname "$CONTAINER_NAME" --argjson ssh "$([[ "$SSH_ENABLED" == 1 ]] && echo true || echo false)" \
        --argjson full "$([[ "$FULL_MODE" == 1 ]] && echo true || echo false)" \
        --argjson br "$([[ "$BUILDROOT" == 1 ]] && echo true || echo false)" \
+       --argjson kp "$([[ "$KPREBUILTS" == 1 ]] && echo true || echo false)" \
        --argjson mounts "$mounts_json" \
        --argjson prods "$(printf '%s\n' $1 | jq -R . | jq -s .)" \
        '.image_tag=$img | .bundle_version=$bv | .bundle_dir=$bd | .container=$cname |
-        .ssh=$ssh | .full=$full | .buildroot=$br |
+        .ssh=$ssh | .full=$full | .buildroot=$br | .kprebuilts=$kp |
         .mounts=(((.mounts // []) + $mounts) | unique) |
         .products = (.products + (reduce $prods[] as $p ({}; .[$p]={"image_tag":$img,"bundle_version":$bv,"bundle_source":($bd | if . == "" then "drive" else "local:"+. end)})))' \
        "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -392,6 +398,8 @@ build_run_args() {
     if [[ "$need_openwrt212" == yes ]]; then
         RUN_ARGS+=(-v "$CQM_ROOT/openwrt212/$BUNDLE_VERSION/openwrt-prebuilt-backup:/pkg/cqm212-openwrt-prebuilt:ro"
                    -e "OPENWRT_PREBUILT_CACHE_DIR=/pkg/cqm212-openwrt-prebuilt")
+        local kp="$CQM_ROOT/kprebuilts212/$BUNDLE_VERSION/prebuilts-kobuk"
+        [[ "$KPREBUILTS" == 1 && -d "$kp" ]] && RUN_ARGS+=(-v "$kp:/pkg/prebuilts-kobuk:ro")
     fi
     if [[ "$need_yocto" == yes ]]; then
         local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
@@ -440,7 +448,8 @@ cmd_setup() {
             cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
-            cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212";;
+            cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212"
+                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212";;
         esac
     done
 
@@ -510,6 +519,7 @@ cmd_version() { echo "cqm22x-setup: image=$IMAGE_TAG bundle=$BUNDLE_VERSION"; }
 ALL_MOUNTS=()
 SSH_ENABLED=1
 BUILDROOT=""
+KPREBUILTS=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -523,6 +533,8 @@ while [[ $# -gt 0 ]]; do
         --customer)   FULL_MODE=0; shift;;
         --no-buildroot) BUILDROOT=0; shift;;
         --buildroot)    BUILDROOT=1; shift;;
+        --no-kernel-prebuilts) KPREBUILTS=0; shift;;
+        --kernel-prebuilts)    KPREBUILTS=1; shift;;
         *)            ARGS+=("$1"); shift;;
     esac
 done
@@ -551,6 +563,8 @@ fi
 
 # buildroot bundle: on unless --no-buildroot now or in a previous setup.
 [[ -n "$BUILDROOT" ]] || { [[ "$(jq -r '.buildroot' "$STATE_FILE")" == "false" ]] && BUILDROOT=0 || BUILDROOT=1; }
+# kernel prebuilts: on unless --no-kernel-prebuilts now or in a previous setup.
+[[ -n "$KPREBUILTS" ]] || { [[ "$(state_get '.kprebuilts')" == "false" ]] && KPREBUILTS=0 || KPREBUILTS=1; }
 
 # --full/--customer win; otherwise reuse a previous setup's recorded mode.
 [[ -n "$FULL_MODE" ]] || { [[ "$(state_get '.full')" == "true" ]] && FULL_MODE=1 || FULL_MODE=0; }
