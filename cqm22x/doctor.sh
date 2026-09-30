@@ -245,6 +245,11 @@ if [[ "$WANT_OPENWRT" == yes ]]; then
     fi
 fi
 
+if [[ "$PRODUCT" == cqm212 ]]; then
+    if [[ -d /pkg/prebuilts-kobuk/clang ]]; then ok "kernel prebuilts" "/pkg/prebuilts-kobuk"
+    else note "kernel prebuilts" "not mounted — the first kernel build syncs them from CodeLinaro"; fi
+fi
+
 if [[ "$WANT_YOCTO" == yes ]]; then
     echo
     echo "yocto bundle (cqm211)"
