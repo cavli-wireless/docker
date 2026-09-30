@@ -37,7 +37,7 @@ cqm22x-openwrt212-1.1.0.tar.zst 632498311a059279169e45c19e88c4778cde1929b6defa58
 '
 # cqm212 kernel_platform/prebuilts (public CodeLinaro), mounted at /pkg/prebuilts-kobuk.
 BUNDLE_FILES_kprebuilts212='
-cqm22x-kprebuilts212-1.1.0.tar.zst 98f491651943733c661bac387ca56a59657f9ee2c40a23b71a579ad5271b10e8 UPLOAD_PENDING
+cqm22x-kprebuilts212-1.1.0.tar.zst 98f491651943733c661bac387ca56a59657f9ee2c40a23b71a579ad5271b10e8 1WkN6mfyj1Kn9XzkoD_CtTqQmaKRoCWi3
 '
 BUNDLE_FILES_yocto='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
