@@ -50,9 +50,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 #    chrpath cpio diffstat: bitbake HOSTTOOLS (cqm211/yocto) refuses to start
 #    without them.
 #    liblzo2-2: mkfs.ubifs (meta, all products) links against liblzo2.so.2.
+#    bc: Buildroot's host dependency check refuses to start without it.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bison boxes build-essential ca-certificates chrpath clang cpio curl \
+        bc bison boxes build-essential ca-certificates chrpath clang cpio curl \
         dh-autoreconf diffstat \
         file flex g++ g++-10 g++-multilib gawk gcc-10 gcc-multilib gettext git \
         git-lfs gnupg libcurl4-gnutls-dev libexpat1-dev libffi-dev liblzo2-2 \
