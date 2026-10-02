@@ -375,6 +375,10 @@ build_run_args() {
                    -v "$CQM_ROOT/cache/yocto-downloads:/pkg/yocto/downloads")
     fi
 
+    # Buildroot toolchain/dl/ccache; writable, the default path of its scripts.
+    mkdir -p "$CQM_ROOT/buildroot"
+    RUN_ARGS+=(-v "$CQM_ROOT/buildroot:/pkg/buildroot")
+
     # per-product writable caches — never shared between products.
     for p in $products; do
         case "$p" in
