@@ -884,7 +884,8 @@ create_container() {
 
     # Caches are kept per product: two products must not share one OpenWrt
     # build_dir and staging_dir.
-    run mkdir -p "$CACHE_ROOT/$product/openwrt" "$CACHE_ROOT/$product/ccache" "$WORK_PATH"
+    run mkdir -p "$CACHE_ROOT/$product/openwrt" "$CACHE_ROOT/$product/ccache" "$WORK_PATH" \
+        "$CQM_ROOT/buildroot"
 
     local -a args=(
         --name "$container" --hostname "$DOCKER_PRV_NAME"
@@ -899,6 +900,8 @@ create_container() {
         -v "$CACHE_ROOT/$product/openwrt:/pkg/openwrt"
         -v "$CACHE_ROOT/$product/ccache:/ccache"
         -v "$WORK_PATH:/work"
+        # Buildroot toolchain/dl/ccache; writable, the default path of its scripts.
+        -v "$CQM_ROOT/buildroot:/pkg/buildroot"
         -v /etc/localtime:/etc/localtime:ro
     )
     if [ -n "${qcom_dir:-}" ]; then
