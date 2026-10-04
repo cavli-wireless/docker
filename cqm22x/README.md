@@ -243,6 +243,7 @@ $HOME/cqm22x                     (override with -r)
 ├── qcom/<version>/              read-only, every product mounts it
 ├── yocto/<version>/             cqm211 only — downloads/, llvm-arm-toolchain-ship/
 ├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/
+├── buildroot/                   /pkg/buildroot, writable — toolchain/, dl/, ccache/
 └── cache/
     ├── cqm220-3/{openwrt,ccache}
     ├── cqm220-0/{openwrt,ccache}
