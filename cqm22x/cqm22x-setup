@@ -21,7 +21,7 @@ CQM_NAME_SUFFIX="${CQM_NAME_SUFFIX:-}"
 BUNDLE_DIR="${CQM_BUNDLE_DIR:-}"
 
 DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
-IMAGE_TAG="${CQM_IMAGE_TAG:-1.1.4}"          # new-image tag; old 1.0.1/1.1.0/1.1.1/1.1.2/1.1.3/latest never touched
+IMAGE_TAG="${CQM_IMAGE_TAG:-1.1.5}"          # new-image tag; old 1.0.1/1.1.0/1.1.1/1.1.2/1.1.3/1.1.4/latest never touched
 BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
 
 # openwrt/yocto: public, packed as several files; fetched+unpacked into the
