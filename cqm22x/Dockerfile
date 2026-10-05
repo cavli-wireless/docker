@@ -32,6 +32,7 @@ ARG RCLONE_SHA256=2155ea2c225272a6f78b2aa4547bb587c40b007586e73b41b31c59edba64f8
 ARG NANOPB_VERSION=0.4.8
 ARG NANOPB_SHA256=0a111c1f4fd6a318805c7b9f4e2b5f59196aa97e4d0ea6a81bc8bad95c728398
 ARG GH_CLI_VERSION=2.101.0
+ARG GH_CLI_SHA256=f876a3b87bf67c94f773d17becca4dc7340b056dab901473a9260ee2a73e237b
 # The repo launcher is re-published in place by Google from time to time.
 # When that happens this build fails loudly (which is the point) — verify the
 # new file, then bump this value in one place.
@@ -212,15 +213,13 @@ RUN cd /tmp \
     && install -m 0755 "rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
     && rm -rf "rclone-v${RCLONE_VERSION}-linux-amd64" "rclone-v${RCLONE_VERSION}-linux-amd64.zip"
 
-# gh — official apt repo, version pinned. Used by cqm22x-setup --full to log
-# in with a device code and pull the qcom bundle from a private release.
-RUN mkdir -p -m 0755 /etc/apt/keyrings \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-           > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# gh — release .deb pinned by sha256 (apt repo keeps only the latest). Used by
+# cqm22x-setup --full to log in with a device code and pull the qcom bundle.
+RUN cd /tmp \
+    && curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.deb" \
+    && echo "${GH_CLI_SHA256}  gh_${GH_CLI_VERSION}_linux_amd64.deb" | sha256sum -c - \
+    && dpkg -i "gh_${GH_CLI_VERSION}_linux_amd64.deb" \
+    && rm -f "gh_${GH_CLI_VERSION}_linux_amd64.deb"
 
 # ---------------------------------------------------------------------------
 # 6b. nanopb — small, unlicensed, baked in. Vendored (not curl): jpa.kapsi.fi
