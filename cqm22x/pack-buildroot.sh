@@ -59,7 +59,7 @@ printf '%s\n' "$VERSION" > "$STAGE/BUNDLE_VERSION"
     echo "Buildroot prebuilt toolchain and source download cache — cqm220-0/3"
     echo "toolchain : $("$gcc" --version | head -1)"
     echo "dl        : $(find "$STAGE/dl" -type f | wc -l) files, $(du -sh "$STAGE/dl" | cut -f1)"
-    echo "packed on : $(hostname) $(date -u +%F)"
+    echo "packed by : Cavli $(date -u +%F)"
     echo
     echo "Public sources and a toolchain built from them; no proprietary material."
 } > "$STAGE/MANIFEST.txt"
@@ -67,7 +67,8 @@ printf '%s\n' "$VERSION" > "$STAGE/BUNDLE_VERSION"
 
 ARCHIVE="$OUTDIR/cqm22x-buildroot-$VERSION.tar.zst"
 log "creating $ARCHIVE (zstd -$LEVEL)"
-tar --use-compress-program="zstd -$LEVEL -T0 --long=27" -cf "$ARCHIVE" -C "$STAGE" .
+tar --owner=0 --group=0 --numeric-owner \
+    --use-compress-program="zstd -$LEVEL -T0 --long=27" -cf "$ARCHIVE" -C "$STAGE" .
 ( cd "$OUTDIR" && sha256sum "$(basename "$ARCHIVE")" ) > "$ARCHIVE.sha256.tmp"
 mv -f "$ARCHIVE.sha256.tmp" "$ARCHIVE.sha256"
 printf '\n  archive  %s\n  size     %s\n  sha256   %s\n\n' \
