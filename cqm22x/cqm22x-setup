@@ -37,7 +37,7 @@ llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878
 '
 # Buildroot toolchain + dl cache (pack-buildroot.sh), extracted into <root>/buildroot = /pkg/buildroot.
 BUNDLE_FILES_buildroot='
-cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e04b963ff76ee7dd9 __PENDING__
+cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e04b963ff76ee7dd9 1tPVJw7L0rMioaA6ARSTtQA4269Og4All
 '
 
 # qcom: a private GitHub release, tag = bundle version. Access = membership
