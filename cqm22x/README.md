@@ -4,13 +4,14 @@ Reproducible build environment for Cavli firmware, for Cavli developers, CI
 and customers alike — the same image everywhere, so a build that works on one
 machine produces the same binaries on the others.
 
-Covers three product lines from one image:
+Covers four product lines from one image:
 
 | Product | Chip | Userspace | Bundles it needs |
 |---|---|---|---|
 | `cqm220-3` | sdx35 | OpenWrt | qcom + openwrt |
 | `cqm220-0` | sdx32 | OpenWrt | qcom + openwrt |
 | `cqm211` | sdx61/62/65 | Yocto | qcom + yocto |
+| `cqm212` | sdx85/Kobuk | OpenWrt | qcom + openwrt212 + kprebuilts212 (not part of `-p all` yet) |
 
 ## Quick start
 
@@ -134,7 +135,10 @@ bash container_docker_helper.sh -w /mnt/ -p cqm211 -u '<link>' -c '<sha256>'
 # both, downloading the shared qcom bundle only once
 bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c '<sha256>'
 
-# everything
+# sdx85 / Kobuk
+bash container_docker_helper.sh -w /mnt/ -p cqm212 -u '<link>' -c '<sha256>'
+
+# everything ('all' = cqm220-3, cqm220-0, cqm211 — cqm212 not included yet)
 bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c '<sha256>'
 ```
 
@@ -163,31 +167,36 @@ bash container_docker_helper.sh -p all -u '<link>' -c '<sha256>' -n
 
 ## How it is put together
 
-One public image plus three bundles, deliberately kept apart:
+One public image plus several bundles, deliberately kept apart:
 
 | | Contents | Size | Needed by | Distribution |
 |---|---|---|---|---|
 | **Base image** | Ubuntu 22.04, Python 2.7/3.6/3.8/3.10, gcc-10, repo, dtc, rclone, bitbake host tools | ~2.4 GB | everything | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
 | **qcom** | HEXAGON, LLVM, linaro, sectools, prebuilts | ~13 GB packed, ~60 GB unpacked | every product | supplied by Cavli, mounted read-only |
 | **yocto** | bitbake `DL_DIR` cache + LLVM/ARM toolchain | ~24 GB packed, ~27 GB unpacked | cqm211 | link built into the setup script |
-| **openwrt** | OpenWrt prebuilt host tools and cross toolchain | ~2.3 GB packed, ~10 GB unpacked | cqm220-0/3 | link built into the setup script |
+| **openwrt** | OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) | ~2.3 GB packed, ~10 GB unpacked | cqm220-0/3 | link built into the setup script |
+| **openwrt212** | Same, for aarch64 gcc-13.3.0 musl | 1.4 GB packed | cqm212 | link built into the setup script |
+| **kprebuilts212** | kernel clang/rust/build-tools from public CodeLinaro, at `/pkg/prebuilts-kobuk` | 1.7 GB packed, 6.8 GB unpacked | cqm212, on by default (`--no-kernel-prebuilts` skips it) | link built into the setup script |
 
 Nothing licensed is in the image, because it is published publicly — and nobody
 can pull a 50 GB image anyway. Splitting also means a toolchain update does not
 force everyone to re-pull the base image, or the other way round.
 
-The bundles are split from each other for a plainer reason: the two cache
-bundles serve different product lines. A cqm220 developer would otherwise
-download 24 GB of Yocto sources they will never build, and a cqm211 developer
-10 GB of OpenWrt toolchain they will never use. With the split, a cqm220 machine
-pulls ~15 GB and a cqm211 machine ~37 GB, and a machine set up for both fetches
-the shared qcom bundle exactly once.
+The bundles are split from each other for a plainer reason: they serve
+different product lines. A cqm220 developer would otherwise download 24 GB of
+Yocto sources they will never build, and a cqm211 developer 10 GB of OpenWrt
+toolchain they will never use. With the split, a cqm220 machine pulls ~15 GB
+and a cqm211 machine ~37 GB, and a machine set up for both fetches the shared
+qcom bundle exactly once. `openwrt` and `openwrt212` are two components, not
+one, because their toolchains are not interchangeable (arm gcc-11.2 vs.
+aarch64 gcc-13.3.0 musl) — the restore code refuses one in place of the other,
+so they can never share a directory or content.
 
 **The qcom link is never committed here.** It points at Qualcomm proprietary
-toolchains and is passed in with `-u` per recipient. The yocto and openwrt
-bundles carry nothing proprietary — public source tarballs, an LLVM build and
-OpenWrt's own host tools — so their links live in the script and no recipient
-has to be told them.
+toolchains and is passed in with `-u` per recipient. The other bundles carry
+nothing proprietary — public source tarballs, an LLVM build and OpenWrt's own
+host tools — so their links live in the script and no recipient has to be told
+them.
 
 ## The environment contract
 
@@ -199,7 +208,7 @@ interpreters   python3 = 3.8.12, python = 3.8.12, 3.6/3.8/3.10 present, _ctypes 
 toolchain      gcc/g++ = 10.5.0, /bin/sh -> bash, LANG = en_US.UTF-8
 device tree    dtc 1.6.0, and a reference .dts compiles to a known sha256
 qcom bundle    required subtrees present, mounted read-only, spot checksums match
-openwrt        prebuilt cache present            (cqm220-0/3 only)
+openwrt        prebuilt cache present            (cqm220-0/3, cqm212 — same check, different bundle mounted)
 yocto          LLVM/ARM toolchain present, DL_DIR prefilled   (cqm211 only)
 caches         /ccache, /work and the product's own cache writable
 identity       not running as root, so build output is not root-owned
@@ -232,9 +241,10 @@ docker exec -u "$(id -u):$(id -g)" build_cqm22x_jammy_$(whoami) cqm-doctor
   written into the mounted work path stay owned by the caller.
 - **Reproducible by construction.** The base is pinned by digest and every
   download in the `Dockerfile` is verified against a recorded sha256.
-- **Caches are per product.** `cqm220-0`, `cqm220-3` and `cqm211` never share an
-  OpenWrt `build_dir` or `staging_dir`, which is why each product gets its own
-  container rather than one container serving all of them.
+- **Caches are per product.** `cqm220-0`, `cqm220-3`, `cqm211` and `cqm212`
+  never share an OpenWrt `build_dir` or `staging_dir`, which is why each
+  product gets its own container rather than one container serving all of
+  them.
 - **Toolchains are mounted read-only,** so a build cannot mutate the shared copy
   that everyone else depends on. The one writable exception is bitbake's
   `DL_DIR`: it ships prefilled but has to accept new downloads, and it is a
@@ -249,12 +259,15 @@ docker exec -u "$(id -u):$(id -g)" build_cqm22x_jammy_$(whoami) cqm-doctor
 $HOME/cqm22x                     (override with -r)
 ├── qcom/<version>/              read-only, every product mounts it
 ├── yocto/<version>/             cqm211 only — downloads/, llvm-arm-toolchain-ship/
-├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/
+├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/ (arm gcc-11.2)
+├── openwrt212/<version>/        cqm212 only — openwrt-prebuilt-backup/ (aarch64 gcc-13.3.0 musl)
+├── kprebuilts212/<version>/     cqm212 only — prebuilts-kobuk/ (kernel clang/rust/build-tools)
 ├── buildroot/                   /pkg/buildroot — toolchain/ (ro), dl/, ccache/; bundle via setup
 └── cache/
     ├── cqm220-3/{openwrt,ccache}
     ├── cqm220-0/{openwrt,ccache}
-    └── cqm211/{openwrt,ccache}
+    ├── cqm211/{openwrt,ccache}
+    └── cqm212/{openwrt,ccache}
 ```
 
 Each bundle is versioned on its own, so several versions can sit side by side
@@ -271,7 +284,7 @@ Sources live wherever `-w` points, mounted at `/work`.
 | `entrypoint.sh` | Runtime UID/GID mapping |
 | `doctor.sh` | The environment contract, installed as `cqm-doctor` |
 | `cqmdev` | Optional day-to-day wrapper (`sync`, `shell`, `build`, `status`) |
-| `pack-bundle.sh` | Cavli-side: build and publish the qcom / yocto / openwrt bundles |
+| `pack-bundle.sh` | Cavli-side: build and publish the qcom / yocto / openwrt / openwrt212 bundles |
 | `cqm22x-setup` | Docker v2 — setup/update/status, all products by default |
 | `pack-buildroot.sh` | Cavli-side: pack the Buildroot bundle (toolchain + dl) for v2 |
 | `pack-qcom-release.sh` | Cavli-side: split qcom into a GitHub release layout (v2 `--full`) |
@@ -281,7 +294,7 @@ Sources live wherever `-w` points, mounted at `/work`.
 On a host with a known-good `/pkg`:
 
 ```bash
-# all three
+# qcom, yocto and openwrt together (does NOT include openwrt212 — see below)
 ./pack-bundle.sh --component all --version 1.1.0 --source /pkg --upload
 
 # just one
@@ -307,6 +320,11 @@ checksum.
   Tag = bundle version (`qcom-<version>`); files over 1.9 GiB are split into
   parts by `pack-qcom-release.sh`, with `SHA256SUMS` covering the parts and
   the untouched whole files.
+- **openwrt212** — same as `openwrt`, but pack it from a CQM212 build host's
+  own `/pkg` (its cache is aarch64 gcc-13.3.0 musl, not interchangeable with
+  cqm220's arm one) and always pass it explicitly: it is not part of
+  `--component all`. Once uploaded, put the link/checksum in `URL_openwrt212` /
+  `SHA_openwrt212`.
 
 Buildroot (v2): `./pack-buildroot.sh --version 1.1.0 --toolchain <cavli-br-toolchain-*.tar.gz>
 --dl <dl dir> --upload`, then set the Drive id and sha256 in `BUNDLE_FILES_buildroot`
