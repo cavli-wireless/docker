@@ -7,20 +7,24 @@
 #   docker start -i build_cqm22x_jammy_$(whoami)
 #
 # The container image itself is public and carries no licensed material. What
-# it needs at runtime comes in three separate bundles, downloaded only when the
+# it needs at runtime comes in separate bundles, downloaded only when the
 # selected products actually need them:
 #
-#   qcom     Qualcomm toolchain, ~13 GB packed. EVERY product needs it.
-#            Proprietary — Cavli hands out the link per recipient, and it is
-#            never committed here. Supply it with -u (and -c for its sha256).
-#   yocto    Yocto download cache + LLVM/ARM toolchain, ~26 GB. cqm211 only.
-#   openwrt  OpenWrt prebuilt host tools and cross toolchain, ~2.3 GB.
-#            cqm220-0 and cqm220-3 only.
+#   qcom       Qualcomm toolchain, ~13 GB packed. EVERY product needs it.
+#              Proprietary — Cavli hands out the link per recipient, and it is
+#              never committed here. Supply it with -u (and -c for its sha256).
+#   yocto      Yocto download cache + LLVM/ARM toolchain, ~26 GB. cqm211 only.
+#   openwrt    OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2),
+#              ~2.3 GB. cqm220-0 and cqm220-3 only.
+#   openwrt212 Same idea for cqm212 (sdx85/Kobuk, aarch64 gcc-13.3.0 musl).
+#              A separate component because the two toolchains are not
+#              interchangeable — restoring one into the other product's build
+#              tree is refused by the build scripts, not just wasteful.
 #
-# yocto and openwrt carry nothing proprietary, so their links are built into
-# this script and nobody has to be told them. That is the whole point of the
-# split: a cqm220 developer never downloads the 26 GB yocto cache, and a cqm211
-# developer never downloads the OpenWrt one.
+# yocto and the two openwrt caches carry nothing proprietary, so their links
+# are built into this script and nobody has to be told them. That is the whole
+# point of the split: a cqm220 developer never downloads the 26 GB yocto
+# cache, and a cqm211 developer never downloads either OpenWrt one.
 #
 # Bundles already on disk are not downloaded again.
 #
@@ -54,6 +58,8 @@ container_docker_helper.sh [options]
         cqm220-3   sdx35, OpenWrt userspace
         cqm220-0   sdx32, OpenWrt userspace
         cqm211     sdx61/62/65, Yocto userspace
+        cqm212     sdx85/Kobuk, OpenWrt userspace (not part of 'all' yet —
+                   see openwrt212 under BUNDLES)
   -u: URL of the QCOM bundle — a Google Drive share link or any direct
       HTTPS URL. Cavli supplies this; it is the only bundle this script
       cannot fetch on its own.
@@ -84,18 +90,26 @@ container_docker_helper.sh [options]
       --force-all also re-downloads the bundles (same as -R -F)
   -n: fetch and unpack the bundles only; do not create containers
 
+  env CQM_NAME_SUFFIX: append _<suffix> to the container name, e.g.
+      build_cqm22x_jammy_<user>_<suffix>[_<product>]. Empty by default (no
+      change to the old name) — set it to test or run a second, isolated
+      instance without touching your real container.
+
 BUNDLES
 
-  Three archives, downloaded only when a selected product needs them:
+  Archives, downloaded only when a selected product needs them:
 
-    qcom      ~13 GB packed, ~60 GB unpacked.  every product
-              Qualcomm proprietary — supplied by Cavli, pass with -u/-c.
-    openwrt   ~2.3 GB packed.                  cqm220-0, cqm220-3
-    yocto     ~24 GB packed, ~27 GB unpacked.  cqm211
-              Both public; their links are built into this script.
+    qcom       ~13 GB packed, ~60 GB unpacked.  every product
+               Qualcomm proprietary — supplied by Cavli, pass with -u/-c.
+    openwrt    ~2.3 GB packed.                  cqm220-0, cqm220-3
+    openwrt212 same idea, aarch64 gcc-13.3.0.   cqm212
+    yocto      ~24 GB packed, ~27 GB unpacked.  cqm211
+               All three of the above are public; their links are built into
+               this script.
 
-  So a cqm220 machine downloads ~15 GB, a cqm211 machine ~37 GB, and a
-  machine set up for everything downloads each archive exactly once.
+  So a cqm220 machine downloads ~15 GB, a cqm211 machine ~37 GB, a cqm212
+  machine ~15 GB, and a machine set up for everything it currently supports
+  ('all' = cqm220-3, cqm220-0, cqm211) downloads each archive exactly once.
 
 EXAMPLES
   # sdx35 only — the default
@@ -106,6 +120,9 @@ EXAMPLES
 
   # both, sharing the qcom bundle
   bash container_docker_helper.sh -w /mnt/ -p cqm220-3,cqm211 -u '<link>' -c <sha256>
+
+  # sdx85 / Kobuk
+  bash container_docker_helper.sh -w /mnt/ -p cqm212 -u '<link>' -c <sha256>
 
   # everything
   bash container_docker_helper.sh -w /mnt/ -p all -u '<link>' -c <sha256>
@@ -150,38 +167,47 @@ LOCAL_USER_IMAGE=no
 #
 #   cqm220-0 / cqm220-3   sdx35 / sdx32   OpenWrt userspace  -> qcom + openwrt
 #   cqm211                sdx61/62/65     Yocto userspace    -> qcom + yocto
+#   cqm212                sdx85/Kobuk     OpenWrt userspace  -> qcom + openwrt212
 #
 # Everything needs qcom; the second component is what differs, and it is the
-# reason the toolchain is not one archive any more.
+# reason the toolchain is not one archive any more. cqm212's OpenWrt cache is
+# its own component (openwrt212), not "openwrt": the two are built for
+# different toolchains (arm gcc-11.2 vs aarch64 gcc-13.3.0 musl) and the
+# restore code in set_openwrt_env.sh refuses a cache for the wrong one, so the
+# archives must never share a directory or content.
 # ---------------------------------------------------------------------------
 #
 # 'sdk' is not a product: it is the application-SDK container for customers,
 # who build packages against the Cavli SDK tarball (apps only, no kernel, no
 # abl signing) and therefore need only the openwrt bundle. It is never part
 # of 'all'.
+#
+# cqm212 is kept out of 'all'; ask for it with "-p cqm212".
 ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211"
 components_for() {
     case "$1" in
         cqm220-0|cqm220-3) echo "qcom openwrt";;
         cqm211)            echo "qcom yocto";;
+        cqm212)            echo "qcom openwrt212";;
         sdk)               echo "openwrt";;
-        *) die "unknown product: $1 (expected one of: $ALL_PRODUCTS sdk)";;
+        *) die "unknown product: $1 (expected one of: $ALL_PRODUCTS sdk cqm212)";;
     esac
 }
 
 # ---------------------------------------------------------------------------
 # Where the public bundles live.
 #
-# These two carry no Qualcomm material — yocto/downloads is public source
+# These carry no Qualcomm material — yocto/downloads is public source
 # tarballs, llvm-arm-toolchain-ship is an LLVM build, and openwrt-prebuilt-
-# backup is OpenWrt's own host tools — so their links belong here, where a
-# recipient needs to be told nothing at all.
+# backup (both flavours) is OpenWrt's own host tools — so their links belong
+# here, where a recipient needs to be told nothing at all.
 #
 # The qcom link is deliberately absent and must stay absent: this repository is
 # public and that bundle is Qualcomm proprietary. It is passed in with -u.
 #
-# Override any of them with CQM_QCOM_URL / CQM_YOCTO_URL / CQM_OPENWRT_URL (and
-# the matching _SHA256) when serving from a local mirror.
+# Override any of them with CQM_QCOM_URL / CQM_YOCTO_URL / CQM_OPENWRT_URL /
+# CQM_OPENWRT212_URL (and the matching _SHA256) when serving from a local
+# mirror.
 # ---------------------------------------------------------------------------
 URL_qcom="${CQM_QCOM_URL:-}"
 SHA_qcom="${CQM_QCOM_SHA256:-}"
@@ -196,6 +222,9 @@ URL_yocto="${CQM_YOCTO_URL:-https://drive.google.com/file/d/1V5Mnrdh4dxf4-ribimC
 SHA_yocto="${CQM_YOCTO_SHA256:-d32d303ebc47a1ce9fb6fb9a2494b3c9c16741d95502e28eb6b1132600ed7c06}"
 URL_openwrt="${CQM_OPENWRT_URL:-https://drive.google.com/file/d/1sPOzmaDvJBZ4rASOLVJphqs6u0FmY8MZ/view?usp=sharing}"
 SHA_openwrt="${CQM_OPENWRT_SHA256:-cdf8f8e3ece1619a32e8ae948f0aee2f5eecf0467b65d5590026c5d235384405}"
+# cqm212's own OpenWrt cache (aarch64 gcc-13.3.0 musl), not interchangeable with openwrt.
+URL_openwrt212="${CQM_OPENWRT212_URL:-https://drive.google.com/file/d/1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn/view?usp=sharing}"
+SHA_openwrt212="${CQM_OPENWRT212_SHA256:-f78de623fa5e6734e29ed3778a77fa80126518b71672d4a8b4bd07b5bf7651c3}"
 KEEP_ARCHIVE=no
 FORCE_FETCH=no
 EXTRA_MOUNTS=()
@@ -274,9 +303,14 @@ for _p in $PRODUCTS; do components_for "$_p" >/dev/null; done
 # cqm220-3 is the default product and gets the plain container name, so it is
 # the one the setup output tells you to `docker start -i`.
 container_for() {
+    # CQM_NAME_SUFFIX defaults to empty, so container names are unchanged for
+    # anyone not setting it (old flow keeps working unchanged). Set it to run
+    # an isolated container namespace (e.g. tests) that cannot collide with a
+    # real build_cqm22x_jammy_$(whoami) container.
+    local sfx="${CQM_NAME_SUFFIX:+_$CQM_NAME_SUFFIX}"
     case "$1" in
-        cqm220-3) echo "${DOCKER_PRV_NAME}_${__USERNAME}";;
-        *)        echo "${DOCKER_PRV_NAME}_${__USERNAME}_$1";;
+        cqm220-3) echo "${DOCKER_PRV_NAME}_${__USERNAME}${sfx}";;
+        *)        echo "${DOCKER_PRV_NAME}_${__USERNAME}${sfx}_$1";;
     esac
 }
 
@@ -359,9 +393,18 @@ comp_dir()  {
 }
 comp_url()  { eval "printf '%s' \"\${URL_$1}\""; }
 comp_sha()  { eval "printf '%s' \"\${SHA_$1}\""; }
+# prebuilts (kernel-build clang/gcc/ndk/jdk/bazel): old bundles ship it under
+# qcom/<v>/prebuilts, new ones under openwrt/<v>/prebuilts (shared by qcom users).
+resolve_prebuilts_dir() {
+    local qdir="$1" odir
+    [ -d "$qdir/prebuilts" ] && { echo "$qdir/prebuilts"; return; }
+    odir="$(comp_dir openwrt)"
+    [ -d "$odir/prebuilts" ] && { echo "$odir/prebuilts"; return; }
+    echo ""
+}
 # Peak space each component needs: the archive plus what it unpacks to, since
 # the download is only deleted after a successful unpack.
-comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; esac; }
+comp_gb()   { case "$1" in qcom) echo 75;; yocto) echo 55;; openwrt) echo 13;; openwrt212) echo 5;; esac; }
 
 count=0
 [[ -n "$PKG_URL" ]]        && count=$((count+1))
@@ -593,9 +636,9 @@ The download is corrupt or incomplete. Re-run with -F."
 # before it is moved into place under the wrong name.
 comp_marker() {
     case "$1" in
-        qcom)    echo qct;;
-        yocto)   echo downloads;;
-        openwrt) echo openwrt-prebuilt-backup;;
+        qcom)               echo qct;;
+        yocto)              echo downloads;;
+        openwrt|openwrt212) echo openwrt-prebuilt-backup;;
     esac
 }
 
@@ -618,10 +661,13 @@ extract_archive() {
 }
 
 comp_required() {
+    # prebuilts is checked separately (resolve_prebuilts_dir): old qcom
+    # bundles have it, new ones don't (it moved to openwrt) — either is fine
+    # here, create_container is what actually enforces it's found somewhere.
     case "$1" in
-        qcom)    echo "qct/software sectools prebuilts";;
-        yocto)   echo "downloads llvm-arm-toolchain-ship";;
-        openwrt) echo "openwrt-prebuilt-backup";;
+        qcom)               echo "qct/software sectools";;
+        yocto)              echo "downloads llvm-arm-toolchain-ship";;
+        openwrt|openwrt212) echo "openwrt-prebuilt-backup";;
     esac
 }
 
@@ -820,7 +866,7 @@ create_container() {
         run docker rm -f "$container" >/dev/null
     fi
 
-    local qcom_dir openwrt_dir yocto_dir
+    local qcom_dir openwrt_dir yocto_dir prebuilts_dir
 
     # Validate every bind source up front. Docker silently creates an empty
     # directory for a missing one, which turns a clear setup error into a
@@ -829,15 +875,25 @@ create_container() {
     case " $comps " in
         *" qcom "*)
             qcom_dir="$(comp_dir qcom)"
-            for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools prebuilts; do
+            for pth in qct/software/HEXAGON_Tools qct/software/arm qct/software/llvm sectools; do
                 [ -e "$qcom_dir/$pth" ] || missing+=("qcom:$pth")
             done
+            prebuilts_dir="$(resolve_prebuilts_dir "$qcom_dir")"
+            [ -n "$prebuilts_dir" ] \
+                || missing+=("qcom:prebuilts (checked $qcom_dir/prebuilts and $(comp_dir openwrt)/prebuilts)")
             ;;
     esac
     case " $comps " in
         *" openwrt "*)
             openwrt_dir="$(comp_dir openwrt)"
             [ -e "$openwrt_dir/openwrt-prebuilt-backup" ] || missing+=("openwrt:openwrt-prebuilt-backup")
+            ;;
+        *" openwrt212 "*)
+            # Same in-container mount point as "openwrt" below — a container
+            # only ever carries one product, so the two never collide, and
+            # set_openwrt_env.sh needs no per-product default path.
+            openwrt_dir="$(comp_dir openwrt212)"
+            [ -e "$openwrt_dir/openwrt-prebuilt-backup" ] || missing+=("openwrt212:openwrt-prebuilt-backup")
             ;;
     esac
     case " $comps " in
@@ -859,7 +915,8 @@ create_container() {
 
     # Caches are kept per product: two products must not share one OpenWrt
     # build_dir and staging_dir.
-    run mkdir -p "$CACHE_ROOT/$product/openwrt" "$CACHE_ROOT/$product/ccache" "$WORK_PATH"
+    run mkdir -p "$CACHE_ROOT/$product/openwrt" "$CACHE_ROOT/$product/ccache" "$WORK_PATH" \
+        "$CQM_ROOT/buildroot"
 
     local -a args=(
         --name "$container" --hostname "$DOCKER_PRV_NAME"
@@ -874,6 +931,8 @@ create_container() {
         -v "$CACHE_ROOT/$product/openwrt:/pkg/openwrt"
         -v "$CACHE_ROOT/$product/ccache:/ccache"
         -v "$WORK_PATH:/work"
+        # Buildroot toolchain/dl/ccache; writable, the default path of its scripts.
+        -v "$CQM_ROOT/buildroot:/pkg/buildroot"
         -v /etc/localtime:/etc/localtime:ro
     )
     if [ -n "${qcom_dir:-}" ]; then
@@ -882,17 +941,21 @@ create_container() {
             -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
             -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
             -v "$qcom_dir/sectools:/pkg/sectools:ro"
-            -v "$qcom_dir/prebuilts:/pkg/prebuilts:ro"
         )
+        [ -n "${prebuilts_dir:-}" ] && args+=( -v "$prebuilts_dir:/pkg/prebuilts:ro" )
         [ -f "$qcom_dir/BUNDLE_VERSION" ]  && args+=( -v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro" )
         [ -r "$qcom_dir/SHA256SUMS.spot" ] && args+=( -v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro" )
     fi
 
-    # OpenWrt's own prebuilt tool/toolchain cache. set_openwrt_env.sh finds it
-    # here by default and restores it automatically on the first app build,
-    # instead of compiling gcc/binutils/musl from scratch.
+    # OpenWrt prebuilt tool/toolchain cache, restored on the first app build.
+    # cqm212 reads its own path via OPENWRT_PREBUILT_CACHE_DIR.
     if [ -n "${openwrt_dir:-}" ]; then
-        args+=( -v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro" )
+        local ow_pkg=/pkg/openwrt-prebuilt-backup
+        case " $comps " in *" openwrt212 "*)
+            ow_pkg=/pkg/cqm212-openwrt-prebuilt
+            args+=( -e "OPENWRT_PREBUILT_CACHE_DIR=$ow_pkg" );;
+        esac
+        args+=( -v "$openwrt_dir/openwrt-prebuilt-backup:$ow_pkg:ro" )
         [ -f "$openwrt_dir/BUNDLE_VERSION" ] && args+=( -v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro" )
     fi
 
