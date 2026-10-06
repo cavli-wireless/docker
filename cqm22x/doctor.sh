@@ -66,7 +66,8 @@ local PRODUCT="$1"
 WANT_QCOM=yes WANT_BUILDROOT=no
 case "$PRODUCT" in
     cqm211)  WANT_YOCTO=yes; WANT_OPENWRT=no;;
-    cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=no;;   # qcom-only, no openwrt/yocto bundle
+    # cqm212 mounts its own aarch64 cache at the same /pkg/openwrt-prebuilt-backup path.
+    cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=yes;;
     sdk)     WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
     buildroot) WANT_YOCTO=no; WANT_OPENWRT=no; WANT_QCOM=no; WANT_BUILDROOT=yes;;
     *)       WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_BUILDROOT=yes;;
@@ -231,16 +232,22 @@ fi  # WANT_QCOM
 # container that is correctly set up for the other product line.
 if [[ "$WANT_OPENWRT" == yes ]]; then
     echo
-    echo "openwrt bundle (cqm220-0/3)"
-    if [[ -d /pkg/openwrt-prebuilt-backup ]]; then
+    echo "openwrt bundle ($PRODUCT)"
+    ow_cache="${OPENWRT_PREBUILT_CACHE_DIR:-/pkg/openwrt-prebuilt-backup}"
+    if [[ -d "$ow_cache" ]]; then
         # Without this the first app build compiles gcc/binutils/musl from
         # source — hours instead of an extract. It is not fatal, so it warns.
-        n="$(ls -1 /pkg/openwrt-prebuilt-backup/*.tar.zst 2>/dev/null | wc -l)"
+        n="$(ls -1 "$ow_cache"/*.tar.zst 2>/dev/null | wc -l)"
         if (( n > 0 )); then ok "prebuilt cache" "$n archive(s)"
-        else note "prebuilt cache" "/pkg/openwrt-prebuilt-backup holds no .tar.zst"; fi
+        else note "prebuilt cache" "$ow_cache holds no .tar.zst"; fi
     else
         note "prebuilt cache" "not mounted — the first app build will compile tool/toolchain from scratch"
     fi
+fi
+
+if [[ "$PRODUCT" == cqm212 ]]; then
+    if [[ -d /pkg/prebuilts-kobuk/clang ]]; then ok "kernel prebuilts" "/pkg/prebuilts-kobuk"
+    else note "kernel prebuilts" "not mounted — the first kernel build syncs them from CodeLinaro"; fi
 fi
 
 if [[ "$WANT_YOCTO" == yes ]]; then
