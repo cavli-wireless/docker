@@ -60,6 +60,13 @@ flag. `status` shows `mode: customer` or `mode: full`. In customer mode,
 instead of failing, and a shell opened with `bash -l` prints a reminder that
 modem/tz/boot builds need the full install.
 
+Buildroot (cqm220-0/3): `setup` also fetches the buildroot bundle (prebuilt
+gcc 14.3 musl toolchain + source `dl/` cache) into `$CQM_ROOT/buildroot`,
+mounted at `/pkg/buildroot` (`toolchain/` read-only, `dl/` and `ccache/`
+writable) and installs `bc`/`cpio`, so `./build.sh` in a Buildroot tree
+downloads nothing. `--no-buildroot` skips it (remembered); `cqm-doctor
+buildroot` checks it.
+
 Home inside is `$CQM_ROOT/home` (never your real one) bind-mounted at your
 host `$HOME` path; `~/.ssh` is mounted read-only at the same path by default
 (skipped if you don't have one, `--no-ssh` to turn it off). `-m <dir>`
@@ -243,7 +250,7 @@ $HOME/cqm22x                     (override with -r)
 ├── qcom/<version>/              read-only, every product mounts it
 ├── yocto/<version>/             cqm211 only — downloads/, llvm-arm-toolchain-ship/
 ├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/
-├── buildroot/                   /pkg/buildroot, writable — toolchain/, dl/, ccache/
+├── buildroot/                   /pkg/buildroot — toolchain/ (ro), dl/, ccache/; bundle via setup
 └── cache/
     ├── cqm220-3/{openwrt,ccache}
     ├── cqm220-0/{openwrt,ccache}
@@ -266,6 +273,7 @@ Sources live wherever `-w` points, mounted at `/work`.
 | `cqmdev` | Optional day-to-day wrapper (`sync`, `shell`, `build`, `status`) |
 | `pack-bundle.sh` | Cavli-side: build and publish the qcom / yocto / openwrt bundles |
 | `cqm22x-setup` | Docker v2 — setup/update/status, all products by default |
+| `pack-buildroot.sh` | Cavli-side: pack the Buildroot bundle (toolchain + dl) for v2 |
 | `pack-qcom-release.sh` | Cavli-side: split qcom into a GitHub release layout (v2 `--full`) |
 
 ## Publishing a new toolchain bundle (Cavli only)
@@ -299,6 +307,10 @@ checksum.
   Tag = bundle version (`qcom-<version>`); files over 1.9 GiB are split into
   parts by `pack-qcom-release.sh`, with `SHA256SUMS` covering the parts and
   the untouched whole files.
+
+Buildroot (v2): `./pack-buildroot.sh --version 1.1.0 --toolchain <cavli-br-toolchain-*.tar.gz>
+--dl <dl dir> --upload`, then set the Drive id and sha256 in `BUNDLE_FILES_buildroot`
+(`cqm22x-setup`). Until then `setup` skips it unless `--bundle-dir <dir>/buildroot` has it.
 
 Compression level defaults per component: 15 for qcom, which is raw binaries
 and compresses about 4:1, and 1 for the other two, whose payload is already

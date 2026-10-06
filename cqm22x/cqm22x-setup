@@ -21,7 +21,7 @@ CQM_NAME_SUFFIX="${CQM_NAME_SUFFIX:-}"
 BUNDLE_DIR="${CQM_BUNDLE_DIR:-}"
 
 DOCKER_IMG="${CQM_IMAGE_REPO:-ghcr.io/cavli-wireless-public/cqm22x-buildenv}"
-IMAGE_TAG="${CQM_IMAGE_TAG:-1.1.4}"          # new-image tag; old 1.0.1/1.1.0/1.1.1/1.1.2/1.1.3/latest never touched
+IMAGE_TAG="${CQM_IMAGE_TAG:-1.1.5}"          # new-image tag; old 1.0.1/1.1.0/1.1.1/1.1.2/1.1.3/1.1.4/latest never touched
 BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
 
 # openwrt/yocto: public, packed as several files; fetched+unpacked into the
@@ -34,6 +34,10 @@ openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7
 BUNDLE_FILES_yocto='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
 llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878111e95e16d2bd7ad 1Rb9k9CsZ2u7kHVpPzIL8ytcq7tygqidz
+'
+# Buildroot toolchain + dl cache (pack-buildroot.sh), extracted into <root>/buildroot = /pkg/buildroot.
+BUNDLE_FILES_buildroot='
+cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e04b963ff76ee7dd9 1tPVJw7L0rMioaA6ARSTtQA4269Og4All
 '
 
 # qcom: a private GitHub release, tag = bundle version. Access = membership
@@ -66,6 +70,7 @@ cqm22x-setup — set up and manage the CQM2xx build container.
   --bundle-dir <dir>      install bundles from <dir> instead of downloading them.
   --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default).
   --full / --customer     do / don't install Qualcomm tools (GitHub device login).
+  --no-buildroot          cqm220-0/3: skip the Buildroot toolchain + dl bundle.
   -h, --help              this text.
 
 Everything lives under \$CQM_ROOT (default ~/cqm22x); container name:
@@ -104,10 +109,11 @@ state_merge() {
     jq --arg img "$IMAGE_TAG" --arg bv "$BUNDLE_VERSION" --arg bd "$BUNDLE_DIR" \
        --arg cname "$CONTAINER_NAME" --argjson ssh "$([[ "$SSH_ENABLED" == 1 ]] && echo true || echo false)" \
        --argjson full "$([[ "$FULL_MODE" == 1 ]] && echo true || echo false)" \
+       --argjson br "$([[ "$BUILDROOT" == 1 ]] && echo true || echo false)" \
        --argjson mounts "$mounts_json" \
        --argjson prods "$(printf '%s\n' $1 | jq -R . | jq -s .)" \
        '.image_tag=$img | .bundle_version=$bv | .bundle_dir=$bd | .container=$cname |
-        .ssh=$ssh | .full=$full |
+        .ssh=$ssh | .full=$full | .buildroot=$br |
         .mounts=(((.mounts // []) + $mounts) | unique) |
         .products = (.products + (reduce $prods[] as $p ({}; .[$p]={"image_tag":$img,"bundle_version":$bv,"bundle_source":($bd | if . == "" then "drive" else "local:"+. end)})))' \
        "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -119,12 +125,12 @@ drive_fetch() {
 }
 
 prestage_component() {
-    # $1 = component (openwrt|yocto), $2 = newline "name sha256 id" list.
-    # Downloads+unpacks into $CQM_ROOT/$1/$BUNDLE_VERSION, marks .complete.
-    local component="$1" files="$2" dest stage src_dir=""
-    dest="$CQM_ROOT/$component/$BUNDLE_VERSION"
-    [[ -f "$dest/.complete" ]] && { log "$component $BUNDLE_VERSION already staged at $dest"; return 0; }
-    [[ "$files" != *"__PENDING__"* ]] || die "$component bundle file list not set yet"
+    # $1 = component (openwrt|yocto|buildroot), $2 = newline "name sha256 id" list,
+    # $3 = dest (default $CQM_ROOT/$1/$BUNDLE_VERSION). Unpacks there, marks .complete.
+    local component="$1" files="$2" dest="${3:-$CQM_ROOT/$1/$BUNDLE_VERSION}" stage src_dir=""
+    [[ -f "$dest/.complete" && "$(cat "$dest/BUNDLE_VERSION" 2>/dev/null)" == "$BUNDLE_VERSION" ]] \
+        && { log "$component $BUNDLE_VERSION already staged at $dest"; return 0; }
+    [[ -n "$BUNDLE_DIR" || "$files" != *"__PENDING__"* ]] || die "$component bundle file list not set yet"
     if [[ -n "$BUNDLE_DIR" ]]; then
         src_dir="$BUNDLE_DIR/$component"
         [[ -d "$src_dir" ]] || die "--bundle-dir: $src_dir not found"
@@ -260,6 +266,16 @@ prestage_qcom() {
     log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
 }
 
+prestage_buildroot() {
+    # Unpublished (no Drive id) and no --bundle-dir: skip, Buildroot downloads itself.
+    if [[ -z "$BUNDLE_DIR" && "$BUNDLE_FILES_buildroot" == *"__PENDING__"* ]]; then
+        log "buildroot bundle not published yet — skipped"; return 0
+    fi
+    [[ -z "$BUNDLE_DIR" || -d "$BUNDLE_DIR/buildroot" ]] \
+        || { log "no $BUNDLE_DIR/buildroot — buildroot bundle skipped"; return 0; }
+    prestage_component buildroot "$BUNDLE_FILES_buildroot" "$CQM_ROOT/buildroot"
+}
+
 prestage_prebuilts() {
     # cqm211 needs qcom + yocto, but `prebuilts` lives in the openwrt bundle.
     local qcom_dest="$CQM_ROOT/qcom/$BUNDLE_VERSION"
@@ -375,9 +391,11 @@ build_run_args() {
                    -v "$CQM_ROOT/cache/yocto-downloads:/pkg/yocto/downloads")
     fi
 
-    # Buildroot toolchain/dl/ccache; writable, the default path of its scripts.
-    mkdir -p "$CQM_ROOT/buildroot"
+    # Buildroot dl/ccache writable, the default path of its scripts; toolchain read-only.
+    mkdir -p "$CQM_ROOT/buildroot/dl" "$CQM_ROOT/buildroot/ccache"
     RUN_ARGS+=(-v "$CQM_ROOT/buildroot:/pkg/buildroot")
+    [[ -d "$CQM_ROOT/buildroot/toolchain" ]] \
+        && RUN_ARGS+=(-v "$CQM_ROOT/buildroot/toolchain:/pkg/buildroot/toolchain:ro")
 
     # per-product writable caches — never shared between products.
     for p in $products; do
@@ -410,7 +428,8 @@ cmd_setup() {
     [[ "$FULL_MODE" == 1 ]] && prestage_qcom
     for p in $new_products; do
         case "$p" in
-            cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt";;
+            cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
+                               [[ "$BUILDROOT" == 1 ]] && prestage_buildroot;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
         esac
     done
@@ -435,6 +454,11 @@ cmd_setup() {
         docker exec "$CONTAINER_NAME" id "$(id -un)" >/dev/null 2>&1 && break
         sleep 0.5
     done
+
+    # Buildroot host deps missing from images <= 1.1.4.
+    docker exec -u 0 "$CONTAINER_NAME" sh -c 'command -v bc >/dev/null && command -v cpio >/dev/null ||
+        { apt-get update -qq && apt-get install -y -qq --no-install-recommends bc cpio >/dev/null 2>&1; }' \
+        || log "warning: could not install bc/cpio (needed by Buildroot)"
 
     state_merge "$new_products"
     [[ "$SSH_ENABLED" == 1 ]] && { [[ -d "$HOME/.ssh" ]] && log "mounted ~/.ssh read-only" || log "~/.ssh not found — skipped"; } \
@@ -462,6 +486,7 @@ cmd_status() {
     echo "bundle version (target): $BUNDLE_VERSION"
     echo "bundle source: $(state_get '.bundle_dir' | sed 's/^$/drive/')"
     echo "ssh mounted: $(state_get '.ssh')"
+    echo "buildroot bundle: $(cat "$CQM_ROOT/buildroot/BUNDLE_VERSION" 2>/dev/null || echo none)$([[ "$BUILDROOT" == 1 ]] || echo ' (--no-buildroot)')"
     echo "installed:"
     jq -r '.products | to_entries[] | "  \(.key): image=\(.value.image_tag) bundle=\(.value.bundle_version) source=\(.value.bundle_source // "drive")"' "$STATE_FILE"
     echo "mounts:"
@@ -474,6 +499,7 @@ cmd_version() { echo "cqm22x-setup: image=$IMAGE_TAG bundle=$BUNDLE_VERSION"; }
 # --- option parsing (options may appear anywhere on the command line) -----
 ALL_MOUNTS=()
 SSH_ENABLED=1
+BUILDROOT=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -485,6 +511,8 @@ while [[ $# -gt 0 ]]; do
         --ssh)        SSH_ENABLED=1; shift;;
         --full)       FULL_MODE=1; shift;;
         --customer)   FULL_MODE=0; shift;;
+        --no-buildroot) BUILDROOT=0; shift;;
+        --buildroot)    BUILDROOT=1; shift;;
         *)            ARGS+=("$1"); shift;;
     esac
 done
@@ -510,6 +538,9 @@ if [[ "$SSH_ENABLED" == 1 ]]; then
     saved_ssh="$(state_get '.ssh')"
     [[ "$saved_ssh" == "false" ]] && SSH_ENABLED=0
 fi
+
+# buildroot bundle: on unless --no-buildroot now or in a previous setup.
+[[ -n "$BUILDROOT" ]] || { [[ "$(jq -r '.buildroot' "$STATE_FILE")" == "false" ]] && BUILDROOT=0 || BUILDROOT=1; }
 
 # --full/--customer win; otherwise reuse a previous setup's recorded mode.
 [[ -n "$FULL_MODE" ]] || { [[ "$(state_get '.full')" == "true" ]] && FULL_MODE=1 || FULL_MODE=0; }

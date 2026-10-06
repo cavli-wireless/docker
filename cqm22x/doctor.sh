@@ -63,12 +63,13 @@ check_product() {
 local PRODUCT="$1"
 # sdk = application-SDK container: OpenWrt packages only, no kernel, no abl
 # signing, so the qcom bundle (and its dtc) is not expected there.
-WANT_QCOM=yes
+WANT_QCOM=yes WANT_BUILDROOT=no
 case "$PRODUCT" in
     cqm211)  WANT_YOCTO=yes; WANT_OPENWRT=no;;
     cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=no;;   # qcom-only, no openwrt/yocto bundle
     sdk)     WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
-    *)       WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+    buildroot) WANT_YOCTO=no; WANT_OPENWRT=no; WANT_QCOM=no; WANT_BUILDROOT=yes;;
+    *)       WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_BUILDROOT=yes;;
 esac
 
 echo
@@ -133,7 +134,7 @@ echo
 echo "device tree compiler"
 dtc_bin=/pkg/qct/software/boottools/dtc
 if [[ "$WANT_QCOM" == no ]]; then
-    note "dtc" "not needed for sdk (qcom bundle not mounted)"
+    [[ "$PRODUCT" == buildroot ]] || note "dtc" "not needed for sdk (qcom bundle not mounted)"
 elif [[ "$CUSTOMER_MODE" == yes ]]; then
     note "dtc" "not installed (customer install)"
 elif [[ -x "$dtc_bin" ]]; then
@@ -178,7 +179,7 @@ fi
 echo
 echo "qcom bundle (/pkg)"
 if [[ "$WANT_QCOM" == no ]]; then
-    note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
+    [[ "$PRODUCT" == buildroot ]] || note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
 fi
 if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == yes ]]; then
     note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cqm22x-setup setup --full"
@@ -257,13 +258,38 @@ if [[ "$WANT_YOCTO" == yes ]]; then
     else note "download cache" "only $n entries — bitbake will fetch from the network"; fi
 fi
 
+# Buildroot (cqm220-0/3): prebuilt toolchain + dl cache. Missing is fatal only
+# for `cqm-doctor buildroot`; otherwise Buildroot builds/downloads them itself.
+if [[ "$WANT_BUILDROOT" == yes ]]; then
+    echo
+    echo "buildroot bundle (/pkg/buildroot)"
+    brmiss() { if [[ "$PRODUCT" == buildroot ]]; then bad "$1" "$2" "$3"; else note "$1" "$3"; fi; }
+    br_gcc=/pkg/buildroot/toolchain/bin/arm-buildroot-linux-musleabihf-gcc
+    if [[ -x "$br_gcc" ]]; then
+        v="$("$br_gcc" -dumpversion 2>/dev/null)"
+        if [[ -n "$v" ]]; then ok "toolchain gcc runs" "$v"; else bad "toolchain gcc runs" "runs" "fails"; fi
+    else
+        brmiss "toolchain" "present" "missing — Buildroot builds gcc itself"
+    fi
+    n="$(find /pkg/buildroot/dl -mindepth 2 -maxdepth 2 -type f ! -name .lock 2>/dev/null | wc -l)"
+    if (( n > 50 )); then ok "dl cache" "$n files"
+    else brmiss "dl cache" ">50 files" "only $n files — Buildroot will download"; fi
+    for p in /pkg/buildroot/dl /pkg/buildroot/ccache; do
+        if [[ -w "$p" ]]; then ok "writable" "$p"; else brmiss "writable" "$p" "$p not writable"; fi
+    done
+    for t in bc cpio; do
+        if command -v "$t" >/dev/null; then ok "host tool $t"; else brmiss "host tool $t" "installed" "missing"; fi
+    done
+fi
+
 # ---- 6. writable caches and workspace -------------------------------------
 # v2 namespaces these per product (/ccache/<p>, /pkg/openwrt/<p>); the older
 # per-product flow uses the bare paths. Check whichever this container has.
 echo
 echo "caches"
 cache_paths=()
-if [[ -d "/ccache/$PRODUCT" ]]; then cache_paths+=("/ccache/$PRODUCT"); else cache_paths+=(/ccache); fi
+if [[ -d "/ccache/$PRODUCT" ]]; then cache_paths+=("/ccache/$PRODUCT")
+elif [[ "$PRODUCT" != buildroot ]]; then cache_paths+=(/ccache); fi
 [[ -d /work ]] && cache_paths+=(/work)
 if [[ "$WANT_OPENWRT" == yes ]]; then
     if [[ -d "/pkg/openwrt/$PRODUCT" ]]; then cache_paths+=("/pkg/openwrt/$PRODUCT"); else cache_paths+=(/pkg/openwrt); fi
