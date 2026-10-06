@@ -270,7 +270,7 @@ it would take. Worth doing on any new machine.
 │   └── 1.1.0/                     unpacked here, ~60 GB, mounted read-only
 ├── openwrt/1.1.0/                 cqm220-* — openwrt-prebuilt-backup/
 ├── yocto/1.1.0/                   cqm211 — downloads/, llvm-arm-toolchain-ship/
-├── buildroot/                     /pkg/buildroot, writable — toolchain/, dl/, ccache/
+├── buildroot/                     /pkg/buildroot — toolchain/ (ro), dl/, ccache/; bundle via setup
 └── cache/
     ├── cqm220-3/{openwrt,ccache}
     ├── cqm220-0/{openwrt,ccache}
