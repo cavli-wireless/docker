@@ -44,7 +44,9 @@ cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m all -V 1.0.0
 Adds ~50 GB (qcom, ~13 GB download). Fresh-tree cold `-m all`: 17–63 min per line. `--full`/`--customer` still work
 (= `--internal`/`--external`); the path is remembered by `update`. Each line's exact `build.sh` command: its manifest
 README. Not published yet (the first build fetches or builds them, unless `--bundle-dir` holds them): kernel
-prebuilts `kprebuilts_sdx35`, OpenWrt caches `owrtcache_kuno11` / `owrtcache_iot20`.
+prebuilts `kprebuilts_sdx35`, OpenWrt caches `owrtcache_{kuno11,iot20}`, cqm212 feed mirrors
+`owrtfeeds_cqm212`, cqm211 Yocto sstate `sstate_cqm211`. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 have no OpenWrt cache yet
+(their external build needs sectools: `status` shows ✗).
 
 ## Quick start
 
@@ -101,14 +103,17 @@ writable) and installs `bc`/`cpio`, so `./build.sh` in a Buildroot tree
 downloads nothing. `--no-buildroot` skips it (remembered); `cqm-doctor
 buildroot` checks it.
 
-Line prebuilts (cqm220-0 Kuno.LE.1.1, cqm220-3 SDX35_IOT.LE.2.0): `setup` also
-stages the kernel prebuilts (`kprebuilts_sdx35`, public CodeLinaro, shared by
-both lines) and each line's OpenWrt cache (`owrtcache_<line>`), mounted
-read-only at `/pkg/kernel_prebuilts/<AU tag>` and `/pkg/openwrt_cache/<AU tag>`
-— the app build picks them by the drop's AU tag and fetches nothing from
-CodeLinaro. `--no-kernel-prebuilts` skips the kernel ones (remembered). The
-OpenWrt cache restores only into a tree whose `apps_proc/owrt` path is no
-longer than the one it was built at (`owrtcache_kuno11`: 59 characters).
+Line prebuilts: `setup` also stages, read-only, the kernel prebuilts of
+Kuno.LE.1.1 / SDX35_IOT.LE.2.0 (`kprebuilts_sdx35`, public CodeLinaro, shared)
+at `/pkg/kernel_prebuilts/<AU tag>`, the OpenWrt cache of those two lines
+(`owrtcache_<line>`: tools, toolchain, host packages, dl, feed mirrors) at
+`/pkg/openwrt_cache/<AU tag>`,
+the cqm212 feed mirrors (`owrtfeeds_cqm212`, `/pkg/openwrt_cache/<AU tag>/feeds`)
+and the cqm211 Yocto sstate (`sstate_cqm211`, `/pkg/yocto/sstate`, Qualcomm
+proprietary recipes left out). The app build picks them by the drop's AU tag
+and fetches nothing from CodeLinaro. `--no-kernel-prebuilts` skips the kernel
+ones (remembered). An OpenWrt cache restores only into a tree whose
+`apps_proc/owrt` path is at most 128 characters, the path it was built at.
 
 Home inside is `$CQM_ROOT/home` (never your real one) bind-mounted at your
 host `$HOME` path; `~/.ssh` is mounted read-only at the same path by default

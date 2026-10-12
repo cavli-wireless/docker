@@ -55,10 +55,25 @@ BUNDLE_FILES_kprebuilts_sdx35='
 cqm22x-kprebuilts_sdx35-1.1.0.tar.zst 7af15ad5b6a0874cafa6f09dc498c902096f37d880bcf8281d5e7de59b9308da __PENDING__
 '
 BUNDLE_FILES_owrtcache_kuno11='
-cqm22x-owrtcache_kuno11-1.1.0.tar.zst de76c969f910241bb60fa66cb6ded1937ddf6b2e39e4018df5cb8864b377189e __PENDING__
+cqm22x-owrtcache_kuno11-1.1.0.tar.zst bb743e10a651613341126d2663dbd2de928c1c5a0eaeede0e3b1d67dd3bc64d2 __PENDING__
 '
 BUNDLE_FILES_owrtcache_iot20='
-cqm22x-owrtcache_iot20-1.1.0.tar.zst c9d3e8372d4ed97a20764920b74e0c121c952c9ff9edf2154aeda73693057dc1 __PENDING__
+cqm22x-owrtcache_iot20-1.1.0.tar.zst d1ace0834667efdc366026a0cbb05f69da2ed7688e0b6ef1908eb6e6e18e0845 __PENDING__
+'
+# Kuno.LE.1.0 / SDX35_IOT.LE.1.0: not packed yet (their external build needs sectools), not staged
+BUNDLE_FILES_owrtcache_kuno10='
+cqm22x-owrtcache_kuno10-1.1.0.tar.zst __PENDING__ __PENDING__
+'
+BUNDLE_FILES_owrtcache_iot10='
+cqm22x-owrtcache_iot10-1.1.0.tar.zst __PENDING__ __PENDING__
+'
+# cqm212 OpenWrt feed mirrors (public CodeLinaro), /pkg/openwrt_cache/<AU tag>/feeds.
+BUNDLE_FILES_owrtfeeds_cqm212='
+cqm22x-owrtfeeds_cqm212-1.1.0.tar.zst 8ca9c2cd33fc30ac956f1d4d8e875c60f0ca4e012f5e107a8863a97c13f9557b __PENDING__
+'
+# cqm211 Yocto sstate of the cavli image, Qualcomm proprietary recipes left out; /pkg/yocto/sstate.
+BUNDLE_FILES_sstate_cqm211='
+cqm22x-sstate_cqm211-1.1.0.tar.zst 99e55bc44a4677641b9639d4837c796b3cfaebf3c047ac23484f62d888956654 __PENDING__
 '
 
 # qcom: a private GitHub release, tag = bundle version. Access = membership
@@ -166,20 +181,21 @@ kuno10  cqm220-0 openwrt
 kuno11  cqm220-0 owrtcache_kuno11 kprebuilts_sdx35
 iot10   cqm220-3 openwrt
 iot20   cqm220-3 owrtcache_iot20 kprebuilts_sdx35
-cqm211  cqm211   yocto prebuilts
-cqm212  cqm212   openwrt212 kprebuilts212
+cqm211  cqm211   yocto prebuilts sstate_cqm211
+cqm212  cqm212   openwrt212 kprebuilts212 owrtfeeds_cqm212
 '
-LINE_GAP_kuno10="no OpenWrt host-package cache (built on the first app build)"
+LINE_GAP_kuno10="external build needs sectools (pending)"
 LINE_GAP_iot10="$LINE_GAP_kuno10"
-LINE_GAP_cqm211="no Yocto sstate cache (first build compiles every recipe)"
-LINE_GAP_cqm212="no OpenWrt feed mirrors (packages/luci/routing cloned on the first app build)"
 
 # Line bundles of a product (cqm220-0 = Kuno.LE.1.1, cqm220-3 = SDX35_IOT.LE.2.0).
 line_bundles() {
-    local l
-    case "$1" in cqm220-0) l=kuno11;; cqm220-3) l=iot20;; *) return 0;; esac
-    echo "owrtcache_$l"
-    [[ "$KPREBUILTS" == 1 ]] && echo kprebuilts_sdx35
+    case "$1" in
+        cqm220-0) echo owrtcache_kuno11;;
+        cqm220-3) echo owrtcache_iot20;;
+        cqm211)   echo sstate_cqm211;;
+        cqm212)   echo owrtfeeds_cqm212;;
+    esac | tr ' ' '\n'
+    case "$1" in cqm220-0|cqm220-3) [[ "$KPREBUILTS" == 1 ]] && echo kprebuilts_sdx35;; esac
     return 0
 }
 
@@ -458,15 +474,15 @@ build_run_args() {
     fi
     if [[ "$need_yocto" == yes ]]; then
         local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
-        mkdir -p "$CQM_ROOT/cache/yocto-downloads"
+        # DL_DIR = the staged downloads, writable (Yocto adds files, .done stamps and locks)
         RUN_ARGS+=(-v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro"
-                   -v "$CQM_ROOT/cache/yocto-downloads:/pkg/yocto/downloads")
+                   -v "$yocto_dir/downloads:/pkg/yocto/downloads")
     fi
 
     # line bundles, one read-only mount per AU tag (an AU symlink mounts its target)
     local c d
     for c in $(for p in $products; do line_bundles "$p"; done | sort -u); do
-        for d in "$CQM_ROOT/$c/$BUNDLE_VERSION"/{kernel_prebuilts,openwrt_cache}/*/; do
+        for d in "$CQM_ROOT/$c/$BUNDLE_VERSION"/{kernel_prebuilts,openwrt_cache,yocto}/*/; do
             [[ -d "$d" ]] || continue
             d="${d%/}"; RUN_ARGS+=(-v "$(realpath "$d"):/pkg/${d#"$CQM_ROOT/$c/$BUNDLE_VERSION/"}:ro")
         done
@@ -512,9 +528,11 @@ cmd_setup() {
             cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
+            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
+                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212"
-                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212";;
+                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212"
+                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
         esac
     done
 
@@ -580,17 +598,18 @@ cmd_status() {
     local p c d want=""
     for p in $(state_get '.products | keys | join(" ")'); do
         case "$p" in
-            cqm220-0|cqm220-3) want+=" openwrt $(line_bundles "$p" | tr '\n' ' ')";;
+            cqm220-0|cqm220-3) want+=" openwrt";;
             cqm211) want+=" yocto";;
             cqm212) want+=" openwrt212"; [[ "$KPREBUILTS" == 1 ]] && want+=" kprebuilts212";;
         esac
+        want+=" $(line_bundles "$p" | tr '\n' ' ')"
     done
     [[ "$FULL_MODE" == 1 ]] && want="qcom $want"
     for c in $(tr ' ' '\n' <<<"$want" | awk 'NF && !seen[$0]++'); do
         d="$CQM_ROOT/$c/$BUNDLE_VERSION"
         if [[ -f "$d/.complete" ]]; then
             printf '  %-18s ok       %6s  %s\n' "$c" "$(du -sh "$d" 2>/dev/null | cut -f1)" \
-                "$(cd "$d" && ls -d kernel_prebuilts/* openwrt_cache/* 2>/dev/null | sed 's#^#/pkg/#' | tr '\n' ' ')"
+                "$(cd "$d" && ls -d kernel_prebuilts/* openwrt_cache/* yocto/* 2>/dev/null | sed 's#^#/pkg/#' | tr '\n' ' ')"
         elif [[ "$(bundle_files "$c")" == *__PENDING__* ]]; then
             printf '  %-18s pending  (not published; the first build fetches or builds it)\n' "$c"
         else
