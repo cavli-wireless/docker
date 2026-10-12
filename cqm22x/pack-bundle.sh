@@ -41,6 +41,8 @@
 #              rust, build-tools...) as synced from public CodeLinaro, .git
 #              dropped. --map prebuilts-kobuk=<...>/kernel_platform/prebuilts
 #
+#   kprebuilts_sdx35 / owrtcache_<line>: per-line kernel prebuilts and OpenWrt cache, mounted by AU tag.
+#
 # Splitting means a cqm220 developer never downloads the 27 GB of yocto cache,
 # and a cqm211 developer never downloads an OpenWrt one. Everyone still needs
 # qcom, which is why it stays a component of its own rather than being merged
@@ -70,7 +72,8 @@ REMOTE_DIR="${CQM_BUNDLE_REMOTE_DIR:-/cqm22x-buildenv/toolchain}"
 # CQM212 build box, not a cqm220 one) and has no place in a routine "pack
 # everything from this /pkg" run. Pack it explicitly with --component openwrt212.
 ALL_COMPONENTS=(qcom yocto openwrt)
-KNOWN_COMPONENTS=("${ALL_COMPONENTS[@]}" openwrt212 kprebuilts212)
+LINE_COMPONENTS=(kprebuilts_sdx35 owrtcache_kuno11 owrtcache_iot20)
+KNOWN_COMPONENTS=("${ALL_COMPONENTS[@]}" openwrt212 kprebuilts212 "${LINE_COMPONENTS[@]}")
 
 log()  { printf '\e[36m==>\e[0m %s\n' "$*"; }
 die()  { printf '\e[31m==> %s\e[0m\n' "$*" >&2; exit 1; }
@@ -84,7 +87,8 @@ usage() {
 cat <<EOF
 pack-bundle.sh --component C --version V [options]
 
-  --component C      qcom | yocto | openwrt | openwrt212 | kprebuilts212 | all   (repeatable)
+  --component C      qcom | yocto | openwrt | openwrt212 | kprebuilts212 |
+                     kprebuilts_sdx35 | owrtcache_<line> | all   (repeatable)
   --version V        bundle version, e.g. 1.1.0            (required)
   --source DIR       /pkg tree to pack from                (default $SOURCE)
   --map REL=DIR      take REL from DIR instead of \$SOURCE/REL (repeatable)
@@ -110,6 +114,9 @@ COMPONENTS
               cqm212 (sdx85/Kobuk) only — public, not part of --component all
   kprebuilts212 prebuilts-kobuk (kernel clang/rust/build-tools, .git dropped)
               cqm212 only — public CodeLinaro, not part of --component all
+  kprebuilts_sdx35  kernel prebuilts of Kuno.LE.1.1 + SDX35_IOT.LE.2.0
+  owrtcache_<line>  kuno11 | iot20 — OpenWrt cache of one line
+              both public, not part of --component all
 
 Staging defaults to a directory beside the output rather than /tmp: the qcom
 tree is around 50 GB, and /tmp is frequently a tmpfs sized well below that.
@@ -156,8 +163,8 @@ expanded=()
 for c in "${COMPONENTS[@]}"; do
     case "$c" in
         all)                          expanded+=("${ALL_COMPONENTS[@]}");;
-        qcom|yocto|openwrt|openwrt212|kprebuilts212) expanded+=("$c");;
-        *) die "unknown component: $c (expected qcom, yocto, openwrt, openwrt212, kprebuilts212 or all)";;
+        *) [[ " ${KNOWN_COMPONENTS[*]} " == *" $c "* ]] || die "unknown component: $c (expected all or one of: ${KNOWN_COMPONENTS[*]})"
+           expanded+=("$c");;
     esac
 done
 # De-duplicate while keeping the declared order. Iterates KNOWN_COMPONENTS
@@ -190,6 +197,15 @@ INCLUDE_openwrt=(openwrt-prebuilt-backup)
 # without repeating it.
 INCLUDE_openwrt212=(openwrt-prebuilt-backup)
 INCLUDE_kprebuilts212=(prebuilts-kobuk)
+# per line: path = mount point under /pkg, named by the drop's AU tag (snap_release.xml)
+INCLUDE_kprebuilts_sdx35=(kernel_prebuilts/AU_LINUX_KERNEL.PLATFORM.2.1.R5.00.00.00.031.116)
+# OpenWrt cache + bare mirrors of the CodeLinaro feeds (feeds/<name>.git), so feeds update is local
+INCLUDE_owrtcache_kuno11=(openwrt_cache/AU_LINUX_EMBEDDED_OWRT.PRODUCT.2.1.1.R1_TARGET_ALL.01.752.021
+                          openwrt_cache/AU_LINUX_EMBEDDED_OWRT.PRODUCT.2.1.1.R1_TARGET_ALL.01.752.021/feeds)
+INCLUDE_owrtcache_iot20=(openwrt_cache/AU_LINUX_EMBEDDED_OWRT.PRODUCT.2.1.1.R2_TARGET_ALL.01.762.012
+                         openwrt_cache/AU_LINUX_EMBEDDED_OWRT.PRODUCT.2.1.1.R2_TARGET_ALL.01.762.012/feeds)
+# "link=target": extra AU names for identical content (same prebuilt revisions in both manifests)
+LINKS_kprebuilts_sdx35=(kernel_prebuilts/AU_LINUX_KERNEL.PLATFORM.2.1.R14.00.00.00.182.009=AU_LINUX_KERNEL.PLATFORM.2.1.R5.00.00.00.031.116)
 
 declare -A SRCREL=(
     [downloads]=yocto/downloads
@@ -201,6 +217,8 @@ declare -A SRCREL=(
 declare -A EXCLUDE_FROM=(
     [openwrt-prebuilt-backup]='--exclude=*.tar'
     [prebuilts-kobuk]='--exclude=.git'
+    [kernel_prebuilts]='--exclude=.git'
+    [openwrt_cache]='--exclude=*.tar'
 )
 
 # The qcom tree is raw binaries and compresses about 4:1, so it is worth a slow
@@ -211,7 +229,7 @@ declare -A EXCLUDE_FROM=(
 zstd_level() {
     [[ -n "$ZSTD_LEVEL" ]] && { echo "$ZSTD_LEVEL"; return; }
     case "$1" in
-        qcom|kprebuilts212) echo 15;;
+        qcom|kprebuilts*) echo 15;;
         *)    echo 1;;
     esac
 }
@@ -223,6 +241,8 @@ component_blurb() {
         openwrt)    echo "OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) — cqm220-0/3 (sdx35/32)";;
         openwrt212) echo "OpenWrt prebuilt host tools and cross toolchain (aarch64 gcc-13.3.0 musl) — cqm212 (sdx85/Kobuk)";;
         kprebuilts212) echo "Kernel build prebuilts (clang, rust, build-tools) from public CodeLinaro — cqm212 (sdx85/Kobuk)";;
+        kprebuilts_*) echo "Kernel build prebuilts (clang, rust, build-tools) from public CodeLinaro — line ${1#*_}";;
+        owrtcache_*) echo "OpenWrt prebuilt tools/toolchain/hostpkg/dl cache — line ${1#*_}";;
     esac
 }
 
@@ -276,9 +296,21 @@ Pass --map $p=<dir> if it lives somewhere else on this host."
         # Trailing slash on the source, explicit destination: the content lands
         # at $STAGE/$p regardless of what the source directory is called.
         # shellcheck disable=SC2086
-        rsync -aH --numeric-ids ${EXCLUDE_FROM[$p]:-} "${src_of[$p]}/" "$STAGE/$p/"
+        rsync -aH --numeric-ids ${EXCLUDE_FROM[$p]:-${EXCLUDE_FROM[${p%%/*}]:-}} "${src_of[$p]}/" "$STAGE/$p/"
     done
 
+    # restore keeps staging_dir/host/bin/python* aimed at the packing tree; drop the prereq
+    # stamp so the first build re-checks the host and relinks them
+    local t
+    for t in "$STAGE"/openwrt_cache/*/host-tools.tar.zst; do
+        [[ -f "$t" ]] || continue
+        zstd -dc "$t" > "$t.tar"
+        tar --delete -f "$t.tar" staging_dir/host/.prereq-build 2>/dev/null || true
+        zstd -q -T0 -f "$t.tar" -o "$t" && rm -f "$t.tar"
+    done
+    local -n links="LINKS_${component}"
+    local l
+    for l in "${links[@]}"; do ln -sfn "${l#*=}" "$STAGE/${l%%=*}"; done
     printf '%s\n' "$VERSION" > "$STAGE/BUNDLE_VERSION"
 
     # --- inventory ----------------------------------------------------------
@@ -323,7 +355,7 @@ Pass --map $p=<dir> if it lives somewhere else on this host."
     log "sampling $SPOT_COUNT files for SHA256SUMS.spot"
     (
         cd "$STAGE"
-        if [[ "$component" == qcom || "$component" == kprebuilts212 ]]; then
+        if [[ "$component" == qcom || "$component" == kprebuilts* ]]; then
             find "${includes[@]}" -type f \( -perm -u+x -o -name '*.so*' \) 2>/dev/null
         else
             find "${includes[@]}" -type f 2>/dev/null
