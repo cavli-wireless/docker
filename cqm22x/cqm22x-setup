@@ -34,7 +34,7 @@ openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7
 '
 # cqm212's OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
 BUNDLE_FILES_openwrt212='
-cqm22x-openwrt212-1.1.0.tar.zst 632498311a059279169e45c19e88c4778cde1929b6defa58c16093e741a96dbf 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
+cqm22x-openwrt212-1.1.0.tar.zst 954481f1ffecfc7ee5b667faa475d3db83f61806316547be922507a262d22816 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
 '
 # cqm212 kernel_platform/prebuilts (public CodeLinaro), mounted at /pkg/prebuilts-kobuk.
 BUNDLE_FILES_kprebuilts212='
@@ -52,13 +52,13 @@ cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e0
 # revisions, one archive) and OpenWrt cache, mounted read-only at /pkg/kernel_prebuilts/<AU tag>
 # and /pkg/openwrt_cache/<AU tag>. __PENDING__ Drive id: not published, --bundle-dir only.
 BUNDLE_FILES_kprebuilts_sdx35='
-cqm22x-kprebuilts_sdx35-1.1.0.tar.zst 7af15ad5b6a0874cafa6f09dc498c902096f37d880bcf8281d5e7de59b9308da __PENDING__
+cqm22x-kprebuilts_sdx35-1.1.0.tar.zst 1d7adff52b6e010ecee9e04b2801ccfa82669138ca1d011e4c127732bf3b36d6 1c7oWFNmv3iMHYfCQHaUIeO-SpZ5pKvZj
 '
 BUNDLE_FILES_owrtcache_kuno11='
-cqm22x-owrtcache_kuno11-1.1.0.tar.zst bb743e10a651613341126d2663dbd2de928c1c5a0eaeede0e3b1d67dd3bc64d2 __PENDING__
+cqm22x-owrtcache_kuno11-1.1.0.tar.zst bb743e10a651613341126d2663dbd2de928c1c5a0eaeede0e3b1d67dd3bc64d2 1i8rnqBi4DExwrSZtYMV-PVWlt2mRiITo
 '
 BUNDLE_FILES_owrtcache_iot20='
-cqm22x-owrtcache_iot20-1.1.0.tar.zst d1ace0834667efdc366026a0cbb05f69da2ed7688e0b6ef1908eb6e6e18e0845 __PENDING__
+cqm22x-owrtcache_iot20-1.1.0.tar.zst d1ace0834667efdc366026a0cbb05f69da2ed7688e0b6ef1908eb6e6e18e0845 1PSE-48KV8srviNhA46xBzKrxBfXvNJUH
 '
 # Kuno.LE.1.0 / SDX35_IOT.LE.1.0: not packed yet (their external build needs sectools), not staged
 BUNDLE_FILES_owrtcache_kuno10='
@@ -69,11 +69,11 @@ cqm22x-owrtcache_iot10-1.1.0.tar.zst __PENDING__ __PENDING__
 '
 # cqm212 OpenWrt feed mirrors (public CodeLinaro), /pkg/openwrt_cache/<AU tag>/feeds.
 BUNDLE_FILES_owrtfeeds_cqm212='
-cqm22x-owrtfeeds_cqm212-1.1.0.tar.zst 8ca9c2cd33fc30ac956f1d4d8e875c60f0ca4e012f5e107a8863a97c13f9557b __PENDING__
+cqm22x-owrtfeeds_cqm212-1.1.0.tar.zst 8ca9c2cd33fc30ac956f1d4d8e875c60f0ca4e012f5e107a8863a97c13f9557b 1JPcEEXgaB08cuWbvyT1ZK_Z6l6qrr_CA
 '
 # cqm211 Yocto sstate of the cavli image, Qualcomm proprietary recipes left out; /pkg/yocto/sstate.
 BUNDLE_FILES_sstate_cqm211='
-cqm22x-sstate_cqm211-1.1.0.tar.zst 99e55bc44a4677641b9639d4837c796b3cfaebf3c047ac23484f62d888956654 __PENDING__
+cqm22x-sstate_cqm211-1.1.0.tar.zst 7d2da92f8e60cd28c35ce209da7094bbdf26f0bb3b47f635416e75fba0f8d772 1rJr_7MUfDp9bPiIlS7fd6mSJ2FTfYKr0
 '
 
 # qcom: a private GitHub release, tag = bundle version. Access = membership

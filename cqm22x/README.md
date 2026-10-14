@@ -43,9 +43,7 @@ cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m all -V 1.0.0
 
 Adds ~50 GB (qcom, ~13 GB download). Fresh-tree cold `-m all`: 17–63 min per line. `--full`/`--customer` still work
 (= `--internal`/`--external`); the path is remembered by `update`. Each line's exact `build.sh` command: its manifest
-README. Not published yet (the first build fetches or builds them, unless `--bundle-dir` holds them): kernel
-prebuilts `kprebuilts_sdx35`, OpenWrt caches `owrtcache_{kuno11,iot20}`, cqm212 feed mirrors
-`owrtfeeds_cqm212`, cqm211 Yocto sstate `sstate_cqm211`. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 have no OpenWrt cache yet
+README. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 have no OpenWrt cache yet
 (their external build needs sectools: `status` shows ✗).
 
 ## Quick start
