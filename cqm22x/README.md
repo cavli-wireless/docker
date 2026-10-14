@@ -29,7 +29,7 @@ cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m app -V 1.0.0
 
 `-m app` builds `boot.img` and the rootfs (`sysfs*.ubi`) to flash with fastboot; no boot/tz/modem/meta, no qcap.
 `setup` stages every prebuilt the lines need (OpenWrt/Yocto caches, kernel prebuilts), so the first build fetches
-nothing big. cqm220-0: ~29 GB under `$CQM_ROOT`, setup ~3 min on a fast link; first Kuno.LE.1.1 `-m app` 20 min, nothing fetched from CodeLinaro.
+nothing big. cqm220-0: ~32 GB under `$CQM_ROOT`, setup ~3 min on a fast link; first Kuno.LE.1.1 `-m app` 20 min, nothing fetched from CodeLinaro.
 
 **Internal: full build** — adds the Qualcomm tools for boot/tz/modem/meta and qcap. Cavli only: `cavli-wireless`
 org membership, GitHub device login, no password.
@@ -43,8 +43,8 @@ cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m all -V 1.0.0
 
 Adds ~50 GB (qcom, ~13 GB download). Fresh-tree cold `-m all`: 17–63 min per line. `--full`/`--customer` still work
 (= `--internal`/`--external`); the path is remembered by `update`. Each line's exact `build.sh` command: its manifest
-README. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 have no OpenWrt cache yet
-(their external build needs sectools: `status` shows ✗).
+README. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 external `-m app` works too: ABL is signed with the
+in-tree sectools and their OpenWrt caches are staged with the product.
 
 ## Quick start
 
@@ -103,7 +103,7 @@ buildroot` checks it.
 
 Line prebuilts: `setup` also stages, read-only, the kernel prebuilts of
 Kuno.LE.1.1 / SDX35_IOT.LE.2.0 (`kprebuilts_sdx35`, public CodeLinaro, shared)
-at `/pkg/kernel_prebuilts/<AU tag>`, the OpenWrt cache of those two lines
+at `/pkg/kernel_prebuilts/<AU tag>`, the OpenWrt cache of each cqm220 line
 (`owrtcache_<line>`: tools, toolchain, host packages, dl, feed mirrors) at
 `/pkg/openwrt_cache/<AU tag>`,
 the cqm212 feed mirrors (`owrtfeeds_cqm212`, `/pkg/openwrt_cache/<AU tag>/feeds`)
@@ -111,7 +111,8 @@ and the cqm211 Yocto sstate (`sstate_cqm211`, `/pkg/yocto/sstate`, Qualcomm
 proprietary recipes left out). The app build picks them by the drop's AU tag
 and fetches nothing from CodeLinaro. `--no-kernel-prebuilts` skips the kernel
 ones (remembered). An OpenWrt cache restores only into a tree whose
-`apps_proc/owrt` path is at most 128 characters, the path it was built at.
+`apps_proc/owrt` path is no longer than the path it was built at (128
+characters; 108 for the LE.1.0 lines).
 
 Home inside is `$CQM_ROOT/home` (never your real one) bind-mounted at your
 host `$HOME` path; `~/.ssh` is mounted read-only at the same path by default

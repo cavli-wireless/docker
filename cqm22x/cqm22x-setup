@@ -60,12 +60,11 @@ cqm22x-owrtcache_kuno11-1.1.0.tar.zst bb743e10a651613341126d2663dbd2de928c1c5a0e
 BUNDLE_FILES_owrtcache_iot20='
 cqm22x-owrtcache_iot20-1.1.0.tar.zst d1ace0834667efdc366026a0cbb05f69da2ed7688e0b6ef1908eb6e6e18e0845 1PSE-48KV8srviNhA46xBzKrxBfXvNJUH
 '
-# Kuno.LE.1.0 / SDX35_IOT.LE.1.0: not packed yet (their external build needs sectools), not staged
 BUNDLE_FILES_owrtcache_kuno10='
-cqm22x-owrtcache_kuno10-1.1.0.tar.zst __PENDING__ __PENDING__
+cqm22x-owrtcache_kuno10-1.1.0.tar.zst b30344825edc23f777f046a4e7dbfc0201aeae18019a67fbe667185979498386 1T1AlLbCRSphbS7-GEn5DjQxmC77ccVQF
 '
 BUNDLE_FILES_owrtcache_iot10='
-cqm22x-owrtcache_iot10-1.1.0.tar.zst __PENDING__ __PENDING__
+cqm22x-owrtcache_iot10-1.1.0.tar.zst 8e7242391c64e3cf6310460a4c5d7df904c10bcce58ab8d79de8cd605b4cd71f 1GjM86lBbuVV2z4uRcw9OPSvJ8lVtNzV0
 '
 # cqm212 OpenWrt feed mirrors (public CodeLinaro), /pkg/openwrt_cache/<AU tag>/feeds.
 BUNDLE_FILES_owrtfeeds_cqm212='
@@ -170,6 +169,11 @@ drive_fetch() {
     # 33: no range support, start over
     [[ $rc == 33 ]] && { rm -f "$2.part"; rc=0; curl -fsSL --retry 5 --retry-delay 10 -o "$2.part" "$url" || rc=$?; }
     [[ $rc == 0 ]] || die "download of $(basename "$2") failed (curl $rc) — re-run to resume"
+    # Drive answers a quota/scan limit with an HTML page instead of the file
+    if head -c 4096 "$2.part" | grep -qi '<html'; then
+        grep -q 'Quota exceeded' "$2.part" && { rm -f "$2.part"; die "Drive download quota exceeded for $(basename "$2"), retry later"; }
+        rm -f "$2.part"; die "Drive returned a web page instead of $(basename "$2"), retry later"
+    fi
     mv -f "$2.part" "$2"
 }
 
@@ -177,21 +181,19 @@ bundle_files() { local v="BUNDLE_FILES_$1"; printf '%s\n' "${!v:-}"; }
 
 # Lines per product: "line product bundles..." and what no bundle covers yet (status prints them).
 LINES='
-kuno10  cqm220-0 openwrt
+kuno10  cqm220-0 openwrt owrtcache_kuno10
 kuno11  cqm220-0 owrtcache_kuno11 kprebuilts_sdx35
-iot10   cqm220-3 openwrt
+iot10   cqm220-3 openwrt owrtcache_iot10
 iot20   cqm220-3 owrtcache_iot20 kprebuilts_sdx35
 cqm211  cqm211   yocto prebuilts sstate_cqm211
 cqm212  cqm212   openwrt212 kprebuilts212 owrtfeeds_cqm212
 '
-LINE_GAP_kuno10="external build needs sectools (pending)"
-LINE_GAP_iot10="$LINE_GAP_kuno10"
 
-# Line bundles of a product (cqm220-0 = Kuno.LE.1.1, cqm220-3 = SDX35_IOT.LE.2.0).
+# Line bundles of a product (cqm220-0 = Kuno.LE.1.0/1.1, cqm220-3 = SDX35_IOT.LE.1.0/2.0).
 line_bundles() {
     case "$1" in
-        cqm220-0) echo owrtcache_kuno11;;
-        cqm220-3) echo owrtcache_iot20;;
+        cqm220-0) echo owrtcache_kuno10 owrtcache_kuno11;;
+        cqm220-3) echo owrtcache_iot10 owrtcache_iot20;;
         cqm211)   echo sstate_cqm211;;
         cqm212)   echo owrtfeeds_cqm212;;
     esac | tr ' ' '\n'
