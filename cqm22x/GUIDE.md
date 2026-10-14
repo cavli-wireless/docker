@@ -415,6 +415,12 @@ If you see `no usable prebuilt cache found, building tool/toolchain from
 scratch`, the bundle predates this or the mount is missing. Check that
 `/pkg/openwrt-prebuilt-backup` exists inside the container.
 
+Kuno.LE.1.1 and SDX35_IOT.LE.2.0 (`cqm22x-setup` only) use their own caches,
+`/pkg/openwrt_cache/<AU tag>`, picked by the drop's AU tag; they also hold the
+host packages. Each was built at a 128-character `apps_proc/owrt` path: check the tree out where
+`<tree>/chipcode/.../apps_proc/owrt` is at most that long, or the first build makes
+the toolchain from scratch (the app build takes about a third longer).
+
 ### What the flags mean
 
 ```
