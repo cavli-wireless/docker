@@ -8,8 +8,8 @@ set up by one script, `cqm22x/cqm22x-setup`, for every product line:
 |---|---|---|
 | `cqm211` | Yocto | yocto (+ prebuilts from openwrt) |
 | `cqm212` | OpenWrt | openwrt212, kprebuilts212 |
-| `cqm220-0` | OpenWrt | openwrt, buildroot |
-| `cqm220-3` | OpenWrt | openwrt, buildroot |
+| `cqm220-0` | OpenWrt | openwrt |
+| `cqm220-3` | OpenWrt | openwrt |
 
 All products share one container, `build_cqm2xx_<user>`, which mirrors your host
 user (name, uid/gid, groups, `$HOME` path), so build output is owned by you.
@@ -18,8 +18,8 @@ There are two install modes:
 
 | Mode | Who | What it can build | Login |
 |---|---|---|---|
-| customer (default) | customers, application developers | the app build (`-m app`) and the SDK | none |
-| full (`--full`) | Cavli engineers | everything above + boot, tz, modem, meta (flashable release) | GitHub, `cavli-wireless` org member |
+| customer (default) | customers, application developers | the application image and the SDK | none |
+| full (`--full`) | Cavli engineers | everything above + the full flashable release | GitHub, `cavli-wireless` org member |
 
 The full mode adds the Qualcomm toolchains (HEXAGON, LLVM, ARM, sectools). They
 are licensed, so they are never in the image or this repository: the script
@@ -28,7 +28,7 @@ pulls them from a private release that only `cavli-wireless` members can read.
 - [1. Requirements](#1-requirements)
 - [2. Customers: set up without login](#2-customers-set-up-without-login)
 - [3. Cavli engineers: set up with GitHub login](#3-cavli-engineers-set-up-with-github-login)
-- [4. Per product: setup, source, build](#4-per-product-setup-source-build)
+- [4. Per product](#4-per-product)
 - [5. Daily use](#5-daily-use)
 - [6. Troubleshooting](#6-troubleshooting)
 - [7. Other directories](#7-other-directories)
@@ -74,7 +74,7 @@ chmod +x cqm22x-setup
 ```
 
 - No GitHub account, password or token is needed: the image and the
-  openwrt, openwrt212, kprebuilts212, yocto and buildroot bundles are public,
+  openwrt, openwrt212, kprebuilts212 and yocto bundles are public,
   and their links and sha256 are pinned in the script.
 - Nothing Qualcomm is downloaded or mounted. `cqm-doctor` reports the qcom
   checks as "not installed (customer install)", which is expected.
@@ -95,9 +95,8 @@ Layout: one directory per component your products need, each with a
 `BUNDLE_VERSION` file that matches the script's bundle version:
 
 - `qcom/`: the archives plus `SHA256SUMS`, checked before unpacking.
-- `openwrt/`, `openwrt212/`, `kprebuilts212/`, `yocto/`, `buildroot/`: the
-  files named in the script, each checked against its pinned sha256.
-  `buildroot/` is optional: without it the bundle is skipped.
+- `openwrt/`, `openwrt212/`, `kprebuilts212/`, `yocto/`: the files named in
+  the script, each checked against its pinned sha256.
 
 ---
 
@@ -135,49 +134,27 @@ Check:
 
 ---
 
-## 4. Per product: setup, source, build
+## 4. Per product
 
-The manifests repository of each line holds the branches, the manifest file and
-the full build walkthrough in its README. Keep source paths short (≲ 80
+| Product | `setup` argument | Source (`repo init -u`) |
+|---|---|---|
+| cqm211 | `cqm211` | `git@github.com:cavli-wireless/cqm211-manifests.git` |
+| cqm212 | `cqm212` | `git@github.com:cavli-wireless/cqm212-manifests.git` |
+| cqm220-0 | `cqm220-0` | `git@github.com:cavli-wireless/cqm22x-manifests.git` |
+| cqm220-3 | `cqm220-3` | `git@github.com:cavli-wireless/cqm22x-manifests.git` |
+
+After `setup`, open a shell in the container (section 5), run
+`cqm-doctor <product>`, then sync the source from the manifests repository; its
+README has the branches and the build steps. Keep source paths short (≲ 80
 characters): OpenWrt and Yocto builds fail on long absolute paths.
 
-| Product | `setup` argument | Source (`repo init -u`) | Build entry |
-|---|---|---|---|
-| cqm211 | `cqm211` | `git@github.com:cavli-wireless/cqm211-manifests.git` | `build/build.sh -t cavli` (M.2: `-t cavli-m2`) |
-| cqm212 | `cqm212` | `git@github.com:cavli-wireless/cqm212-manifests.git` | `build/build.sh -t cavli` (M.2: `-t cavli-m2`) |
-| cqm220-0 | `cqm220-0` | `git@github.com:cavli-wireless/cqm22x-manifests.git` | `build/build.sh -t cavli` from the chipcode root (M.2: `-t cavli-m2`) |
-| cqm220-3 | `cqm220-3` | `git@github.com:cavli-wireless/cqm22x-manifests.git` | `build/build.sh -t cavli` from the chipcode root (M.2: `-t cavli-m2`) |
-
-Example (cqm212, full mode):
-
-```bash
-./cqm22x-setup setup --full cqm212 -m /mnt/data/src
-docker exec -it --user $(id -un) -e HOME=$HOME build_cqm2xx_$(id -un) bash -l
-
-# inside the container
-cqm-doctor cqm212
-mkdir -p /mnt/data/src/cqm212 && cd /mnt/data/src/cqm212
-repo init -u git@github.com:cavli-wireless/cqm212-manifests.git -b <branch> -m <manifest.xml>
-repo sync -c -j8
-bash build/build.sh -t cavli -m all -V 1.0.0
-```
-
-Product notes:
-
 - **cqm211** (Yocto): bitbake's download cache is `/pkg/yocto/downloads`, a
-  writable cache kept in `$CQM_ROOT/cache/yocto-downloads`; the LLVM/ARM
-  toolchain from the yocto bundle is mounted read-only.
+  writable cache kept in `$CQM_ROOT/cache/yocto-downloads`.
 - **cqm212** (OpenWrt): the kernel prebuilts are mounted at
   `/pkg/prebuilts-kobuk`; `--no-kernel-prebuilts` skips that bundle and the build
   then syncs them from CodeLinaro (a large, slow download).
-- **cqm220-0 / cqm220-3** (OpenWrt): both use the arm OpenWrt cache at
-  `/pkg/openwrt-prebuilt-backup`. The Buildroot bundle (toolchain + `dl/`) is
-  mounted at `/pkg/buildroot`; `--no-buildroot` skips it.
-- Each product has its own writable caches: `/ccache/<product>` and, for
-  cqm220-x, `/pkg/openwrt/<product>`. Set `export CCACHE_DIR=/ccache/<product>`
-  before building, so two products never share a cache.
-- Customer mode: the app build (`-m app`) and the SDK; `boot`, `tz`, `modem`
-  and `meta` need full mode.
+- Each product has its own writable caches under `/ccache/<product>`; set
+  `export CCACHE_DIR=/ccache/<product>` so two products never share a cache.
 
 ---
 
