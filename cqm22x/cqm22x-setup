@@ -1,6 +1,6 @@
 #!/bin/bash
-# cqm22x-setup — Docker v2 (setup/update/status/version): one container per
-# user holding every product, mirrors host identity. Full docs: README.md.
+# cqm22x-setup — Docker v2: one container per user for every product; --external (default,
+# app build) or --internal (full build). Docs: README.md.
 #   wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm22x/cqm22x-setup && chmod +x cqm22x-setup
 #   ./cqm22x-setup setup
 set -euo pipefail
@@ -33,7 +33,7 @@ openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7
 '
 # cqm212's OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
 BUNDLE_FILES_openwrt212='
-cqm22x-openwrt212-1.1.0.tar.zst 632498311a059279169e45c19e88c4778cde1929b6defa58c16093e741a96dbf 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
+cqm22x-openwrt212-1.1.0.tar.zst 954481f1ffecfc7ee5b667faa475d3db83f61806316547be922507a262d22816 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
 '
 # cqm212 kernel_platform/prebuilts (public CodeLinaro), mounted at /pkg/prebuilts-kobuk.
 BUNDLE_FILES_kprebuilts212='
@@ -47,6 +47,22 @@ llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878
 BUNDLE_FILES_buildroot='
 cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e04b963ff76ee7dd9 1tPVJw7L0rMioaA6ARSTtQA4269Og4All
 '
+# Per line OpenWrt cache, mounted read-only under /pkg/openwrt_cache/<AU tag>.
+# A __PENDING__ id: --bundle-dir only.
+BUNDLE_FILES_owrtcache_kuno10='
+cqm22x-owrtcache_kuno10-1.1.0.tar.zst b30344825edc23f777f046a4e7dbfc0201aeae18019a67fbe667185979498386 1T1AlLbCRSphbS7-GEn5DjQxmC77ccVQF
+'
+BUNDLE_FILES_owrtcache_iot10='
+cqm22x-owrtcache_iot10-1.1.0.tar.zst 8e7242391c64e3cf6310460a4c5d7df904c10bcce58ab8d79de8cd605b4cd71f 1GjM86lBbuVV2z4uRcw9OPSvJ8lVtNzV0
+'
+# cqm212 OpenWrt feed mirrors (public CodeLinaro), /pkg/openwrt_cache/<AU tag>/feeds.
+BUNDLE_FILES_owrtfeeds_cqm212='
+cqm22x-owrtfeeds_cqm212-1.1.0.tar.zst 8ca9c2cd33fc30ac956f1d4d8e875c60f0ca4e012f5e107a8863a97c13f9557b 1JPcEEXgaB08cuWbvyT1ZK_Z6l6qrr_CA
+'
+# cqm211 Yocto sstate of the cavli image, Qualcomm proprietary recipes left out; /pkg/yocto/sstate.
+BUNDLE_FILES_sstate_cqm211='
+cqm22x-sstate_cqm211-1.1.0.tar.zst 7d2da92f8e60cd28c35ce209da7094bbdf26f0bb3b47f635416e75fba0f8d772 1rJr_7MUfDp9bPiIlS7fd6mSJ2FTfYKr0
+'
 
 # qcom: a private GitHub release, tag = bundle version. Access = membership
 # in the cavli-wireless org; no password. Login is a device code, done in a
@@ -54,8 +70,8 @@ cqm22x-buildroot-1.1.0.tar.zst f01cc413317851a1fc65470a17aa6c596fe96268b073d86e0
 QCOM_RELEASE_REPO="${CQM_QCOM_RELEASE_REPO:-cavli-wireless/cqm2xx-qcom-bundles}"
 QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-$BUNDLE_VERSION}"
 
-# full (internal, qcom) vs customer (default): --full wins, else a previous
-# setup's state.json value, else customer.
+# internal (--internal/--full: full build, qcom tools) vs external (default,
+# --external/--customer: app only): flag wins, else state.json, else external.
 FULL_MODE=""
 
 ALL_PRODUCTS="cqm220-3 cqm220-0 cqm211 cqm212"
@@ -73,20 +89,26 @@ cqm22x-setup — set up and manage the CQM2xx build container.
   status                  show what's installed and the container's mounts.
   version                 print the target image tag and bundle version.
 
+  --external              (default) app build only: kernel + rootfs, no Qualcomm
+                          tools. Old name: --customer.
+  --internal              full build (boot/tz/modem/meta): also installs the
+                          Qualcomm tools (GitHub device login). Old name: --full.
+
   -m <dir>                bind-mount a host dir into the container (repeatable).
   --name <x>              use a separate, named container instead of the default.
   --bundle-dir <dir>      install bundles from <dir> instead of downloading them.
   --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default).
-  --full / --customer     do / don't install Qualcomm tools (GitHub device login).
   --no-buildroot          cqm220-0/3: skip the Buildroot toolchain + dl bundle.
-  --no-kernel-prebuilts   cqm212: skip the kernel prebuilts bundle (synced from CodeLinaro on build).
+  --no-kernel-prebuilts   cqm212: skip the kernel prebuilts bundle (the first build syncs it from CodeLinaro).
   -h, --help              this text.
 
 Everything lives under \$CQM_ROOT (default ~/cqm22x); container name:
-build_cqm2xx_<user>.
+build_cqm2xx_<user>. setup stages every prebuilt the products' lines need
+(cqm220-0: Kuno.LE.1.0, cqm220-3: SDX35_IOT.LE.1.0, cqm211, cqm212).
 
 Examples:
-  ./cqm22x-setup setup cqm220-0 -m /mnt/SSD_2TB/cqm22x-src   # first install
+  ./cqm22x-setup setup cqm220-0 -m /path/to/cqm22x-src       # first install (external)
+  ./cqm22x-setup setup --internal                            # internal, all products
   ./cqm22x-setup setup cqm211                                # add a product
   ./cqm22x-setup update                                      # bring up to date
 EOF
@@ -130,39 +152,76 @@ state_merge() {
 }
 
 drive_fetch() {
-    # $1 = drive file id, $2 = output path
-    curl -fsSL "https://drive.usercontent.google.com/download?id=$1&confirm=t" -o "$2"
+    # $1 = drive file id, $2 = output path; resumes $2.part, renamed when complete
+    local url="https://drive.usercontent.google.com/download?id=$1&confirm=t" rc=0
+    curl -fsSL --retry 5 --retry-delay 10 -C - -o "$2.part" "$url" || rc=$?
+    # 33: no range support, start over
+    [[ $rc == 33 ]] && { rm -f "$2.part"; rc=0; curl -fsSL --retry 5 --retry-delay 10 -o "$2.part" "$url" || rc=$?; }
+    [[ $rc == 0 ]] || die "download of $(basename "$2") failed (curl $rc) — re-run to resume"
+    # Drive answers a quota/scan limit with an HTML page instead of the file
+    if head -c 4096 "$2.part" | grep -qi '<html'; then
+        grep -q 'Quota exceeded' "$2.part" && { rm -f "$2.part"; die "Drive download quota exceeded for $(basename "$2"), retry later"; }
+        rm -f "$2.part"; die "Drive returned a web page instead of $(basename "$2"), retry later"
+    fi
+    mv -f "$2.part" "$2"
+}
+
+bundle_files() { local v="BUNDLE_FILES_$1"; printf '%s\n' "${!v:-}"; }
+
+# Lines per product: "line product bundles..." and what no bundle covers yet (status prints them).
+LINES='
+kuno10  cqm220-0 openwrt owrtcache_kuno10
+iot10   cqm220-3 openwrt owrtcache_iot10
+cqm211  cqm211   yocto prebuilts sstate_cqm211
+cqm212  cqm212   openwrt212 kprebuilts212 owrtfeeds_cqm212
+'
+
+# Line bundles of a product (cqm220-0 = Kuno.LE.1.0, cqm220-3 = SDX35_IOT.LE.1.0).
+line_bundles() {
+    case "$1" in
+        cqm220-0) echo owrtcache_kuno10;;
+        cqm220-3) echo owrtcache_iot10;;
+        cqm211)   echo sstate_cqm211;;
+        cqm212)   echo owrtfeeds_cqm212;;
+    esac | tr ' ' '\n'
+    return 0
 }
 
 prestage_component() {
-    # $1 = component (openwrt|openwrt212|yocto|buildroot), $2 = newline "name sha256 id" list,
-    # $3 = dest (default $CQM_ROOT/$1/$BUNDLE_VERSION). Unpacks there, marks .complete.
+    # $1 = component, $2 = "name sha256 id" list, $3 = dest (default $CQM_ROOT/$1/$BUNDLE_VERSION).
+    # From --bundle-dir/<component> or Drive (resumed); sha256-checked, unpacked, marked .complete.
     local component="$1" files="$2" dest="${3:-$CQM_ROOT/$1/$BUNDLE_VERSION}" stage src_dir=""
-    [[ -f "$dest/.complete" && "$(cat "$dest/BUNDLE_VERSION" 2>/dev/null)" == "$BUNDLE_VERSION" ]] \
+    # .pins = the sha256 list staged; a changed pin restages. openwrt212 had no .pins and its pin changed.
+    local pins have; pins="$(awk 'NF {print $2}' <<<"$files")"; have="$(cat "$dest/.pins" 2>/dev/null || true)"
+    [[ -n "$have" || "$component" == openwrt212 ]] || have="$pins"
+    [[ -f "$dest/.complete" && "$(cat "$dest/BUNDLE_VERSION" 2>/dev/null)" == "$BUNDLE_VERSION" && "$have" == "$pins" ]] \
         && { log "$component $BUNDLE_VERSION already staged at $dest"; return 0; }
-    [[ -n "$BUNDLE_DIR" || "$files" != *"__PENDING__"* ]] || die "$component bundle file list not set yet"
-    if [[ -n "$BUNDLE_DIR" ]]; then
+    [[ -f "$dest/.complete" ]] && { log "$component: pinned content changed, restaging"; rm -f "$dest/.complete"; }
+    if [[ -n "$BUNDLE_DIR" && -d "$BUNDLE_DIR/$component" ]]; then
         src_dir="$BUNDLE_DIR/$component"
-        [[ -d "$src_dir" ]] || die "--bundle-dir: $src_dir not found"
         local local_bv; local_bv="$(cat "$src_dir/BUNDLE_VERSION" 2>/dev/null || true)"
         [[ "$local_bv" == "$BUNDLE_VERSION" ]] \
             || die "--bundle-dir: $src_dir/BUNDLE_VERSION is '$local_bv', expected $BUNDLE_VERSION"
+    elif [[ "$files" == *"__PENDING__"* ]]; then
+        die "$component bundle not published yet — pass --bundle-dir with $component/ in it"
     fi
     stage="$CQM_ROOT/cache/$component-$BUNDLE_VERSION"
     mkdir -p "$dest" "$stage"
     while read -r name sha id; do
         [[ -n "$name" ]] || continue
         local f="$stage/$name"
-        if [[ ! -f "$f" ]] || ! echo "$sha  $f" | sha256sum -c --quiet - 2>/dev/null; then
-            if [[ -n "$src_dir" ]]; then
-                log "$component: taking $name from $src_dir"
-                cp "$src_dir/$name" "$f"
-            else
-                log "$component: fetching $name"
-                drive_fetch "$id" "$f"
-            fi
-            echo "$sha  $f" | sha256sum -c - || die "$component/$name checksum mismatch"
+        if [[ -n "$src_dir" ]]; then
+            f="$src_dir/$name"
+            # no pinned sum yet (unpublished): the store's SHA256SUMS
+            [[ "$sha" == __* ]] && sha="$(awk -v n="$name" '$2 == n || $2 ~ ("/" n "$") {print $1}' "$src_dir/SHA256SUMS" 2>/dev/null)"
+            log "$component: using $f"
+        elif [[ ! -f "$f" ]]; then
+            log "$component: fetching $name"
+            drive_fetch "$id" "$f"
         fi
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "$component/$name: no sha256 to check against"
+        echo "$sha  $f" | sha256sum -c --quiet - \
+            || { [[ -n "$src_dir" ]] || rm -f "$f"; die "$component/$name checksum mismatch"; }
         case "$name" in
             *.tar.zst) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest";;
             *.tar)     tar -xf "$f" -C "$dest";;
@@ -170,6 +229,7 @@ prestage_component() {
         esac
     done <<<"$files"
     printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
+    printf '%s\n' "$pins" > "$dest/.pins"
     touch "$dest/.complete"
     rm -rf "$stage"
     ok_size="$(du -sh "$dest" | cut -f1)"
@@ -242,7 +302,7 @@ prestage_qcom() {
     local dest="$CQM_ROOT/qcom/$BUNDLE_VERSION"
     [[ -f "$dest/.complete" ]] && { log "qcom $BUNDLE_VERSION already staged at $dest"; return 0; }
     mkdir -p "$CQM_ROOT/cache" "$dest"
-    if [[ -n "$BUNDLE_DIR" ]]; then
+    if [[ -n "$BUNDLE_DIR" && -d "$BUNDLE_DIR/qcom" ]]; then
         prestage_qcom_local "$dest"
         printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
         touch "$dest/.complete"
@@ -276,14 +336,16 @@ prestage_qcom() {
     log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
 }
 
-prestage_buildroot() {
-    # Unpublished (no Drive id) and no --bundle-dir: skip, Buildroot downloads itself.
-    if [[ -z "$BUNDLE_DIR" && "$BUNDLE_FILES_buildroot" == *"__PENDING__"* ]]; then
-        log "buildroot bundle not published yet — skipped"; return 0
+prestage_buildroot() { prestage_optional buildroot "$CQM_ROOT/buildroot"; }
+
+prestage_optional() {
+    # $1 = component, $2 = dest (optional). Unpublished and not in --bundle-dir: skipped.
+    local files; files="$(bundle_files "$1")"
+    if [[ "$files" == *"__PENDING__"* && ! -d "${BUNDLE_DIR:-/nonexistent}/$1" ]]; then
+        log "$1 bundle not published yet — skipped (the first build fetches or builds it)"; return 0
     fi
-    [[ -z "$BUNDLE_DIR" || -d "$BUNDLE_DIR/buildroot" ]] \
-        || { log "no $BUNDLE_DIR/buildroot — buildroot bundle skipped"; return 0; }
-    prestage_component buildroot "$BUNDLE_FILES_buildroot" "$CQM_ROOT/buildroot"
+    [[ "$files" == *"__PENDING__"* ]] && log "$1 bundle not published yet — taking it from $BUNDLE_DIR/$1"
+    prestage_component "$1" "$files" ${2:+"$2"}
 }
 
 prestage_prebuilts() {
@@ -380,16 +442,17 @@ build_run_args() {
     [[ "$FULL_MODE" == 1 ]] || need_qcom=no
 
     if [[ "$need_qcom" == yes ]]; then
-        local qcom_dir="$CQM_ROOT/qcom/$BUNDLE_VERSION" prebuilts_dir
+        local qcom_dir="$CQM_ROOT/qcom/$BUNDLE_VERSION"
         RUN_ARGS+=(-v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
                    -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
                    -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
                    -v "$qcom_dir/sectools:/pkg/sectools:ro")
-        prebuilts_dir="$(resolve_prebuilts_dir "$qcom_dir")"
-        [[ -n "$prebuilts_dir" ]] && RUN_ARGS+=(-v "$prebuilts_dir:/pkg/prebuilts:ro")
         [[ -f "$qcom_dir/BUNDLE_VERSION" ]]  && RUN_ARGS+=(-v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro")
         [[ -r "$qcom_dir/SHA256SUMS.spot" ]] && RUN_ARGS+=(-v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro")
     fi
+    # shared kernel-build prebuilts (public; LE.1.0 lines and cqm211 link /pkg/prebuilts), both paths
+    local prebuilts_dir; prebuilts_dir="$(resolve_prebuilts_dir "$CQM_ROOT/qcom/$BUNDLE_VERSION")"
+    [[ -n "$prebuilts_dir" ]] && RUN_ARGS+=(-v "$prebuilts_dir:/pkg/prebuilts:ro")
     if [[ "$need_openwrt" == yes ]]; then
         local openwrt_dir="$CQM_ROOT/openwrt/$BUNDLE_VERSION"
         RUN_ARGS+=(-v "$openwrt_dir/openwrt-prebuilt-backup:/pkg/openwrt-prebuilt-backup:ro")
@@ -403,10 +466,19 @@ build_run_args() {
     fi
     if [[ "$need_yocto" == yes ]]; then
         local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
-        mkdir -p "$CQM_ROOT/cache/yocto-downloads"
+        # DL_DIR = the staged downloads, writable (Yocto adds files, .done stamps and locks)
         RUN_ARGS+=(-v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro"
-                   -v "$CQM_ROOT/cache/yocto-downloads:/pkg/yocto/downloads")
+                   -v "$yocto_dir/downloads:/pkg/yocto/downloads")
     fi
+
+    # line bundles, one read-only mount per AU tag (an AU symlink mounts its target)
+    local c d
+    for c in $(for p in $products; do line_bundles "$p"; done | sort -u); do
+        for d in "$CQM_ROOT/$c/$BUNDLE_VERSION"/{openwrt_cache,yocto}/*/; do
+            [[ -d "$d" ]] || continue
+            d="${d%/}"; RUN_ARGS+=(-v "$(realpath "$d"):/pkg/${d#"$CQM_ROOT/$c/$BUNDLE_VERSION/"}:ro")
+        done
+    done
 
     # Buildroot dl/ccache writable, the default path of its scripts; toolchain read-only.
     mkdir -p "$CQM_ROOT/buildroot/dl" "$CQM_ROOT/buildroot/ccache"
@@ -432,7 +504,7 @@ build_run_args() {
 }
 
 cmd_setup() {
-    local new_products="${*:-$ALL_PRODUCTS}"
+    local new_products="${*:-$ALL_PRODUCTS}" c
     new_products="$(tr ', ' '  ' <<<"$new_products")"
     for p in $new_products; do
         case " $ALL_PRODUCTS " in *" $p "*) ;; *) die "unknown product: $p";; esac
@@ -440,16 +512,19 @@ cmd_setup() {
 
     guard_container "$CONTAINER_NAME"
 
-    # customer (default): never fetch/stage/decrypt qcom. --full (or a
-    # previous --full recorded in state.json): stage it as before.
+    # external (default): never fetch/stage/decrypt qcom. internal (or a
+    # previous internal setup recorded in state.json): stage it.
     [[ "$FULL_MODE" == 1 ]] && prestage_qcom
     for p in $new_products; do
         case "$p" in
             cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
-                               [[ "$BUILDROOT" == 1 ]] && prestage_buildroot;;
-            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts;;
+                               [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
+                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
+            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
+                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212"
-                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212";;
+                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212"
+                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
         esac
     done
 
@@ -500,7 +575,7 @@ cmd_update() {
 
 cmd_status() {
     echo "container: $CONTAINER_NAME"
-    echo "mode: $([[ "$FULL_MODE" == 1 ]] && echo full || echo customer)"
+    echo "path: $([[ "$FULL_MODE" == 1 ]] && echo 'internal (full build)' || echo 'external (app build only)')"
     echo "image tag (target):   $IMAGE_TAG"
     echo "bundle version (target): $BUNDLE_VERSION"
     echo "bundle source: $(state_get '.bundle_dir' | sed 's/^$/drive/')"
@@ -511,6 +586,52 @@ cmd_status() {
     echo "mounts:"
     echo "  $CQM_ROOT/workspace (default)"
     jq -r '.mounts[]? | "  \(.)"' "$STATE_FILE"
+    echo "staged prebuilts:"
+    local p c d want=""
+    for p in $(state_get '.products | keys | join(" ")'); do
+        case "$p" in
+            cqm220-0|cqm220-3) want+=" openwrt";;
+            cqm211) want+=" yocto";;
+            cqm212) want+=" openwrt212"; [[ "$KPREBUILTS" == 1 ]] && want+=" kprebuilts212";;
+        esac
+        want+=" $(line_bundles "$p" | tr '\n' ' ')"
+    done
+    [[ "$FULL_MODE" == 1 ]] && want="qcom $want"
+    for c in $(tr ' ' '\n' <<<"$want" | awk 'NF && !seen[$0]++'); do
+        d="$CQM_ROOT/$c/$BUNDLE_VERSION"
+        if [[ -f "$d/.complete" ]]; then
+            printf '  %-18s ok       %6s  %s\n' "$c" "$(du -sh "$d" 2>/dev/null | cut -f1)" \
+                "$(cd "$d" && ls -d openwrt_cache/* yocto/* 2>/dev/null | sed 's#^#/pkg/#' | tr '\n' ' ')"
+        elif [[ "$(bundle_files "$c")" == *__PENDING__* ]]; then
+            printf '  %-18s pending  (not published; the first build fetches or builds it)\n' "$c"
+        else
+            printf '  %-18s missing  (run setup)\n' "$c"
+        fi
+    done
+    echo "lines:"
+    local installed line prod comps miss
+    installed=" $(state_get '.products | keys | join(" ")') "
+    while read -r line prod comps; do
+        [[ -n "$line" && "$installed" == *" $prod "* ]] || continue
+        miss=""
+        [[ "$FULL_MODE" == 1 ]] && comps="qcom $comps"
+        for c in $comps; do
+            case "$c" in
+                prebuilts) [[ -n "$(resolve_prebuilts_dir "$CQM_ROOT/qcom/$BUNDLE_VERSION")" ]] && continue;;
+                kprebuilts*) [[ "$KPREBUILTS" == 1 ]] || { miss+=" $c (--no-kernel-prebuilts)"; continue; }
+                             [[ -f "$CQM_ROOT/$c/$BUNDLE_VERSION/.complete" ]] && continue;;
+                *) [[ -f "$CQM_ROOT/$c/$BUNDLE_VERSION/.complete" ]] && continue;;
+            esac
+            [[ "$(bundle_files "$c")" == *__PENDING__* ]] && miss+=" $c (not published)" || miss+=" $c (run setup)"
+        done
+        if [[ -z "$miss" ]]; then printf '  \u2713 %-7s %-9s all prebuilts staged\n' "$line" "$prod"
+        else printf '  \u2717 %-7s %-9s missing:%s\n' "$line" "$prod" "$miss"; fi
+    done <<<"$LINES"
+    if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+        echo "/pkg in $CONTAINER_NAME:"
+        docker inspect "$CONTAINER_NAME" --format '{{range .Mounts}}{{.Destination}}{{if not .RW}} (ro){{end}}{{"\n"}}{{end}}' \
+            | grep '^/pkg' | sort | sed 's/^/  /'
+    fi
 }
 
 cmd_version() { echo "cqm22x-setup: image=$IMAGE_TAG bundle=$BUNDLE_VERSION"; }
@@ -529,8 +650,8 @@ while [[ $# -gt 0 ]]; do
                       ALL_MOUNTS+=("$mount_rp"); shift 2;;
         --no-ssh)     SSH_ENABLED=0; shift;;
         --ssh)        SSH_ENABLED=1; shift;;
-        --full)       FULL_MODE=1; shift;;
-        --customer)   FULL_MODE=0; shift;;
+        --internal|--full)     FULL_MODE=1; shift;;
+        --external|--customer) FULL_MODE=0; shift;;
         --no-buildroot) BUILDROOT=0; shift;;
         --buildroot)    BUILDROOT=1; shift;;
         --no-kernel-prebuilts) KPREBUILTS=0; shift;;
@@ -557,16 +678,16 @@ EXTRA_MOUNTS=("${ALL_MOUNTS[@]}")
 while IFS= read -r m; do [[ -n "$m" ]] && ALL_MOUNTS+=("$m"); done < <(jq -r '.mounts[]?' "$STATE_FILE")
 mapfile -t ALL_MOUNTS < <(printf '%s\n' "${ALL_MOUNTS[@]}" | sort -u | sed '/^$/d')
 if [[ "$SSH_ENABLED" == 1 ]]; then
-    saved_ssh="$(state_get '.ssh')"
+    saved_ssh="$(jq -r '.ssh' "$STATE_FILE")"
     [[ "$saved_ssh" == "false" ]] && SSH_ENABLED=0
 fi
 
 # buildroot bundle: on unless --no-buildroot now or in a previous setup.
 [[ -n "$BUILDROOT" ]] || { [[ "$(jq -r '.buildroot' "$STATE_FILE")" == "false" ]] && BUILDROOT=0 || BUILDROOT=1; }
 # kernel prebuilts: on unless --no-kernel-prebuilts now or in a previous setup.
-[[ -n "$KPREBUILTS" ]] || { [[ "$(state_get '.kprebuilts')" == "false" ]] && KPREBUILTS=0 || KPREBUILTS=1; }
+[[ -n "$KPREBUILTS" ]] || { [[ "$(jq -r '.kprebuilts' "$STATE_FILE")" == "false" ]] && KPREBUILTS=0 || KPREBUILTS=1; }
 
-# --full/--customer win; otherwise reuse a previous setup's recorded mode.
+# --internal/--external win; otherwise reuse a previous setup's recorded path.
 [[ -n "$FULL_MODE" ]] || { [[ "$(state_get '.full')" == "true" ]] && FULL_MODE=1 || FULL_MODE=0; }
 
 case "$CMD" in

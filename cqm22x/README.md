@@ -13,6 +13,39 @@ Covers four product lines from one image:
 | `cqm211` | sdx61/62/65 | Yocto | qcom + yocto |
 | `cqm212` | sdx85/Kobuk | OpenWrt | qcom + openwrt212 + kprebuilts212 (not part of `-p all` yet) |
 
+## Choose your path
+
+One script, `cqm22x-setup`, two paths. Pick by what you build.
+
+**External (default): app build only** — kernel + rootfs, no Qualcomm tools, no login. For customers and app work.
+
+```bash
+wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm22x/cqm22x-setup && chmod +x cqm22x-setup
+./cqm22x-setup setup cqm220-0 -m /path/to/src     # cqm220-0 | cqm220-3 | cqm211 | cqm212, several allowed
+./cqm22x-setup status                             # path: external, staged prebuilts, /pkg mounts
+docker exec -it --user $(id -un) -e HOME=$HOME build_cqm2xx_$(whoami) bash -l
+cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m app -V 1.0.0
+```
+
+`-m app` builds `boot.img` and the rootfs (`sysfs*.ubi`) to flash with fastboot; no boot/tz/modem/meta, no qcap.
+`setup` stages every prebuilt the lines need (OpenWrt/Yocto caches, kernel prebuilts), so the first build fetches
+nothing big. cqm212: ~3.9 GB of bundles, ~74 s to download on a fast link.
+
+**Internal: full build** — adds the Qualcomm tools for boot/tz/modem/meta and qcap. Cavli only: `cavli-wireless`
+org membership, GitHub device login, no password.
+
+```bash
+./cqm22x-setup setup --internal -m /path/to/src   # all products; or name them
+./cqm22x-setup status                             # path: internal
+docker exec --user $(id -un) build_cqm2xx_$(whoami) cqm-doctor
+cd /path/to/src/<tree>/chipcode && ./build/build.sh -t cavli -m all -V 1.0.0
+```
+
+Adds the qcom bundle (~13 GB packed, table below). `--full`/`--customer` still work
+(= `--internal`/`--external`); the path is remembered by `update`. Each line's exact `build.sh` command: its manifest
+README. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 external `-m app` works too: ABL is signed with the
+in-tree sectools and their OpenWrt caches are staged with the product.
+
 ## Quick start
 
 ```bash
@@ -42,9 +75,9 @@ inside and outside the container.
 
 ```bash
 wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm22x/cqm22x-setup && chmod +x cqm22x-setup
-./cqm22x-setup setup              # all products, one container, no qcom (customer)
+./cqm22x-setup setup              # all products, one container, external (no qcom)
 ./cqm22x-setup setup cqm211       # add a product; re-run later to add another
-./cqm22x-setup setup --full       # internal: also install Qualcomm tools (GitHub login, no password)
+./cqm22x-setup setup --internal   # also install Qualcomm tools (GitHub login, no password)
 ./cqm22x-setup update             # image + bundles, in place, same mounts, same mode
 ./cqm22x-setup status
 docker exec -it --user $(id -un) -e HOME=$HOME build_cqm2xx_$(whoami) bash -l
@@ -52,11 +85,11 @@ docker exec -it --user $(id -un) -e HOME=$HOME build_cqm2xx_$(whoami) bash -l
 
 By default `setup` never fetches, stages or mounts anything Qualcomm — a
 customer gets a working openwrt/yocto build environment with no qcom bundle
-and no login prompt. `--full` (internal use) logs in to GitHub with a device
+and no login prompt. `--internal` (old name `--full`) logs in to GitHub with a device
 code — access is `cavli-wireless` org membership, no password — and pulls
 the qcom bundle from a private release; the mode is remembered in the state
 file, so plain `setup`/`update` afterwards keep it without repeating the
-flag. `status` shows `mode: customer` or `mode: full`. In customer mode,
+flag. `status` shows `path: external` or `path: internal`. On the external path,
 `cqm-doctor` reports qcom checks as "not installed (customer install)"
 instead of failing, and a shell opened with `bash -l` prints a reminder that
 modem/tz/boot builds need the full install.
@@ -67,6 +100,16 @@ mounted at `/pkg/buildroot` (`toolchain/` read-only, `dl/` and `ccache/`
 writable) and installs `bc`/`cpio`, so `./build.sh` in a Buildroot tree
 downloads nothing. `--no-buildroot` skips it (remembered); `cqm-doctor
 buildroot` checks it.
+
+Line prebuilts: `setup` also stages, read-only, the OpenWrt cache of each cqm220
+line (`owrtcache_<line>`: tools, toolchain, host packages, dl, feed mirrors) at
+`/pkg/openwrt_cache/<AU tag>`, the cqm212 feed mirrors (`owrtfeeds_cqm212`,
+`/pkg/openwrt_cache/<AU tag>/feeds`) and the cqm211 Yocto sstate (`sstate_cqm211`, `/pkg/yocto/sstate`, Qualcomm
+proprietary recipes left out). The app build picks them by the drop's AU tag
+and fetches nothing from CodeLinaro. `--no-kernel-prebuilts` skips the cqm212
+kernel prebuilts (remembered). An OpenWrt cache restores only into a tree whose
+`apps_proc/owrt` path is no longer than the path it was built at (108
+characters for the LE.1.0 lines).
 
 Home inside is `$CQM_ROOT/home` (never your real one) bind-mounted at your
 host `$HOME` path; `~/.ssh` is mounted read-only at the same path by default
@@ -81,7 +124,7 @@ mountpoint through that bind at container start, leaving an empty root-owned
 stub inside `$CQM_ROOT/home` — harmless, but `rm -rf $CQM_ROOT` then needs
 `sudo` for that one stub. Set `CQM_ROOT` outside `$HOME` to avoid it.
 
-`--full` runs a throwaway container from the same image (mounting your
+`--internal` runs a throwaway container from the same image (mounting your
 `$CQM_ROOT/home` and `$CQM_ROOT/qcom`) that checks `gh auth status` and, if
 needed, prints a device code and URL for `gh auth login --web` — open it in
 any browser, on any machine, works the same over SSH since nothing needs a
@@ -89,7 +132,7 @@ browser on the host. It then downloads the qcom release, verifies
 `SHA256SUMS` and unpacks it. The GitHub token stays in
 `$CQM_ROOT/home/.config/gh` (mode 600) and is reused by later `update`s — not
 an org member, or no access, and it fails with one clear error and installs
-nothing. openwrt and yocto are public and need neither `--full` nor a login;
+nothing. openwrt and yocto are public and need neither `--internal` nor a login;
 their links are already in the script. Full walkthrough and the per-product
 links: the manifests repo's README (`cqm22x-manifests`, `cqm211-manifests`,
 `cqm212-manifests`).
@@ -97,11 +140,13 @@ links: the manifests repo's README (`cqm22x-manifests`, `cqm211-manifests`,
 Already have the bundles on disk (offline, or no network)? `--bundle-dir
 <dir>` (or `CQM_BUNDLE_DIR`) reads `<dir>/<component>/` instead — same layout
 as the upload (files + `SHA256SUMS` + `BUNDLE_VERSION`), still checked
-against the pinned checksums. qcom is the plain per-file layout, no login
+against the pinned checksums (an unpublished bundle: against its own
+`SHA256SUMS`); a component missing there comes from Drive. Drive downloads
+resume when `setup` is re-run. qcom is the plain per-file layout, no login
 needed:
 
 ```bash
-./cqm22x-setup --bundle-dir /path/to/pkg-bundles setup --full cqm220-3
+./cqm22x-setup --bundle-dir /path/to/pkg-bundles setup --internal cqm220-3
 ```
 
 The directory is remembered in the state file, so a later `update` keeps
