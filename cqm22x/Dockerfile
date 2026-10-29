@@ -33,9 +33,10 @@ ARG NANOPB_VERSION=0.4.8
 ARG NANOPB_SHA256=0a111c1f4fd6a318805c7b9f4e2b5f59196aa97e4d0ea6a81bc8bad95c728398
 ARG GH_CLI_VERSION=2.101.0
 ARG GH_CLI_SHA256=f876a3b87bf67c94f773d17becca4dc7340b056dab901473a9260ee2a73e237b
-# The repo launcher is re-published in place by Google from time to time.
-# When that happens this build fails loudly (which is the point) — verify the
-# new file, then bump this value in one place.
+# The repo launcher is fetched as the versioned repo-<ver>. The unversioned
+# "repo" is re-published in place by Google (2.71 on 2026-10-28 broke the old
+# pin). To move on: verify the new repo-<ver>, then bump both values.
+ARG REPO_VERSION=2.65
 ARG REPO_SHA256=1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -192,12 +193,15 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.6  1
 #    bundle — the runtime mounts overlay only qct/software/{HEXAGON_Tools,arm,
 #    llvm}, sectools and prebuilts, leaving these in place.
 # ---------------------------------------------------------------------------
-RUN curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/bin/repo \
+RUN curl -fsSL "https://storage.googleapis.com/git-repo-downloads/repo-${REPO_VERSION}" -o /usr/bin/repo \
     && echo "${REPO_SHA256}  /usr/bin/repo" | sha256sum -c - \
     && chmod a+rx /usr/bin/repo
 
+# dtc source vendored (not curl): git.kernel.org's snapshot URL returns 502
+# often enough to fail most builds (4 of 5 on 2026-10-29). Same bytes as
+# git.kernel.org/pub/scm/utils/dtc/dtc.git/snapshot/dtc-${DTC_VERSION}.tar.gz.
+COPY vendor/dtc-${DTC_VERSION}.tar.gz /tmp/
 RUN cd /tmp \
-    && curl -fsSLO "https://git.kernel.org/pub/scm/utils/dtc/dtc.git/snapshot/dtc-${DTC_VERSION}.tar.gz" \
     && echo "${DTC_SHA256}  dtc-${DTC_VERSION}.tar.gz" | sha256sum -c - \
     && tar -xzf "dtc-${DTC_VERSION}.tar.gz" \
     && make -C "dtc-${DTC_VERSION}" -j"$(nproc)" NO_PYTHON=1 NO_VALGRIND=1 \
@@ -258,6 +262,13 @@ RUN mkdir -p /pkg/qct/software /pkg/sectools /pkg/prebuilts /pkg/kernel \
              /work /ccache \
     && ln -sfn /pkg/prebuilts /pkg/kernel/prebuilts \
     && chmod 0777 /pkg/openwrt /pkg/yocto/downloads /work /ccache
+
+# sectools shim at the path the build scripts call ($(SEC_PATH)/sectools).
+# Not the Qualcomm tool: it runs the sectools the SDK ships in its own tree, so
+# an external install can sign ABL. An internal install mounts the qcom bundle
+# over /pkg/sectools, which hides the shim.
+COPY sectools-shim /pkg/sectools/v2/latest/Linux/sectools
+RUN chmod 0755 /pkg/sectools/v2/latest/Linux/sectools
 
 ENV CCACHE_DIR=/ccache \
     TERM=xterm-256color \
