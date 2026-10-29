@@ -33,9 +33,10 @@ ARG NANOPB_VERSION=0.4.8
 ARG NANOPB_SHA256=0a111c1f4fd6a318805c7b9f4e2b5f59196aa97e4d0ea6a81bc8bad95c728398
 ARG GH_CLI_VERSION=2.101.0
 ARG GH_CLI_SHA256=f876a3b87bf67c94f773d17becca4dc7340b056dab901473a9260ee2a73e237b
-# The repo launcher is re-published in place by Google from time to time.
-# When that happens this build fails loudly (which is the point) — verify the
-# new file, then bump this value in one place.
+# The repo launcher is fetched as the versioned repo-<ver>. The unversioned
+# "repo" is re-published in place by Google (2.71 on 2026-10-28 broke the old
+# pin). To move on: verify the new repo-<ver>, then bump both values.
+ARG REPO_VERSION=2.65
 ARG REPO_SHA256=1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -192,7 +193,7 @@ RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.6  1
 #    bundle — the runtime mounts overlay only qct/software/{HEXAGON_Tools,arm,
 #    llvm}, sectools and prebuilts, leaving these in place.
 # ---------------------------------------------------------------------------
-RUN curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/bin/repo \
+RUN curl -fsSL "https://storage.googleapis.com/git-repo-downloads/repo-${REPO_VERSION}" -o /usr/bin/repo \
     && echo "${REPO_SHA256}  /usr/bin/repo" | sha256sum -c - \
     && chmod a+rx /usr/bin/repo
 
