@@ -197,8 +197,11 @@ RUN curl -fsSL "https://storage.googleapis.com/git-repo-downloads/repo-${REPO_VE
     && echo "${REPO_SHA256}  /usr/bin/repo" | sha256sum -c - \
     && chmod a+rx /usr/bin/repo
 
+# dtc source vendored (not curl): git.kernel.org's snapshot URL returns 502
+# often enough to fail most builds (4 of 5 on 2026-10-29). Same bytes as
+# git.kernel.org/pub/scm/utils/dtc/dtc.git/snapshot/dtc-${DTC_VERSION}.tar.gz.
+COPY vendor/dtc-${DTC_VERSION}.tar.gz /tmp/
 RUN cd /tmp \
-    && curl -fsSLO "https://git.kernel.org/pub/scm/utils/dtc/dtc.git/snapshot/dtc-${DTC_VERSION}.tar.gz" \
     && echo "${DTC_SHA256}  dtc-${DTC_VERSION}.tar.gz" | sha256sum -c - \
     && tar -xzf "dtc-${DTC_VERSION}.tar.gz" \
     && make -C "dtc-${DTC_VERSION}" -j"$(nproc)" NO_PYTHON=1 NO_VALGRIND=1 \
