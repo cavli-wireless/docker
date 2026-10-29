@@ -46,6 +46,12 @@ Adds the qcom bundle (~13 GB packed, table below). `--full`/`--customer` still w
 README. Kuno.LE.1.0 / SDX35_IOT.LE.1.0 external `-m app` works too: ABL is signed with the
 in-tree sectools and their OpenWrt caches are staged with the product.
 
+The image has no Qualcomm sectools. `/pkg/sectools/v2/latest/Linux/sectools` is a shim (image 1.1.6+)
+that runs the tree's own copy: `<meta>/common/sectoolsv2/ext/Linux` (chipcode), else
+`owrt/src/vendor/qcom/proprietary/sectools/Linux` (customer SDK, whose scripts call the `/pkg` path).
+`CQM_SECTOOLS=<binary>` overrides it. The internal install mounts the qcom bundle over `/pkg/sectools`,
+which hides the shim.
+
 ## Quick start
 
 ```bash

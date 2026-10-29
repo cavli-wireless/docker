@@ -1,0 +1,49 @@
+#!/bin/bash
+# sectools shim — installed in the image as /pkg/sectools/v2/latest/Linux/sectools.
+#
+# The Qualcomm sectools is proprietary, so this public image does not ship it.
+#   internal install: the qcom bundle is bind-mounted over /pkg/sectools and
+#                     hides this file; the real sectools runs, nothing changes.
+#   external install: /pkg/sectools holds only this shim. The source tree ships
+#                     its own sectools; run that one, so packages that call
+#                     $(SEC_PATH)/sectools (sign_abl) build without the bundle.
+#
+# Lookup order: $CQM_SECTOOLS; then <meta>/common/sectoolsv2/ext/Linux (what the
+# chipcode build scripts pass as --sectools_path); then the apps tree's
+# src/vendor/qcom/proprietary/sectools/Linux (the only copy in a customer SDK).
+# Each tree path is searched from $TOPDIR (exported by OpenWrt make) and $PWD up.
+# Anything found that resolves to this shim is skipped.
+
+rels=(common/sectoolsv2/ext/Linux/sectools
+      src/vendor/qcom/proprietary/sectools/Linux/sectools
+      owrt/src/vendor/qcom/proprietary/sectools/Linux/sectools)
+rel=${rels[1]}
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+
+candidates=()
+[[ -n "${CQM_SECTOOLS:-}" ]] && candidates+=("$CQM_SECTOOLS")
+for r in "${rels[@]}"; do
+    for start in "${TOPDIR:-}" "$PWD"; do
+        d="$start"
+        while [[ -n "$d" && "$d" != / ]]; do
+            candidates+=("$d/$r")
+            d="${d%/*}"
+        done
+    done
+done
+
+for c in "${candidates[@]}"; do
+    [[ -f "$c" && -x "$c" ]] || continue
+    [[ "$(readlink -f "$c")" == "$self" ]] && continue
+    exec "$c" "$@"
+done
+
+cat >&2 <<EOF
+sectools: not found.
+  This container has no Qualcomm sectools (external install), and the source
+  tree has none at <tree>/$rel
+  (looked from TOPDIR=${TOPDIR:-<unset>} and from $PWD up).
+  Full builds: cqm22x-setup setup --internal.
+  Or point CQM_SECTOOLS at a sectools binary.
+EOF
+exit 127
