@@ -259,6 +259,13 @@ RUN mkdir -p /pkg/qct/software /pkg/sectools /pkg/prebuilts /pkg/kernel \
     && ln -sfn /pkg/prebuilts /pkg/kernel/prebuilts \
     && chmod 0777 /pkg/openwrt /pkg/yocto/downloads /work /ccache
 
+# sectools shim at the path the build scripts call ($(SEC_PATH)/sectools).
+# Not the Qualcomm tool: it runs the sectools the SDK ships in its own tree, so
+# an external install can sign ABL. An internal install mounts the qcom bundle
+# over /pkg/sectools, which hides the shim.
+COPY sectools-shim /pkg/sectools/v2/latest/Linux/sectools
+RUN chmod 0755 /pkg/sectools/v2/latest/Linux/sectools
+
 ENV CCACHE_DIR=/ccache \
     TERM=xterm-256color \
     CQM_BUILDENV=1
