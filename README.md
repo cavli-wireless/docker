@@ -61,9 +61,7 @@ similar). Re-run the same command; it passes.
 
 ## Known state of this version
 
-- Work in progress, reviewed step by step. Not yet changed from the old tool:
-  `setup` still also stages the Buildroot bundle and the per-line OpenWrt cache from
-  Google Drive; if Drive is over its quota it stops with "Drive returned a web page".
+- Work in progress, reviewed step by step. `setup` downloads only the items above; no Buildroot, no per-line cache.
 - The Qualcomm tools are still one archive (no per-line split yet).
 - Not covered here: other lines (cqm211, cqm212); use the old tool `cqm22x/` for them.
 
