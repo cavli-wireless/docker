@@ -71,10 +71,7 @@ Old customers: the previous Drive files and flags are unchanged. Set
 `CQM_BUNDLE_SOURCE=drive` to take the two tools from Drive as before; the release
 can be redirected with `CQM_BUNDLES_REPO=<owner/repo>`.
 
-Known issue on this branch (work in progress): `setup` for cqm220 still also fetches the
-Buildroot bundle from Drive, which currently fails when Drive's download quota is
-exceeded ("Drive returned a web page"). Use `--no-buildroot` until Buildroot becomes
-opt-in. The qcom bundle for `--internal` is not yet split per line on this branch.
+The qcom bundle for `--internal` is not yet split per line on this branch.
 
 ## Quick start
 
