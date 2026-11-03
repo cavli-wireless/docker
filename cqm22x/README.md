@@ -52,6 +52,30 @@ that runs the tree's own copy: `<meta>/common/sectoolsv2/ext/Linux` (chipcode), 
 `CQM_SECTOOLS=<binary>` overrides it. The internal install mounts the qcom bundle over `/pkg/sectools`,
 which hides the shim.
 
+### cqm220 (cqm220-0 and cqm220-3, one group)
+
+Both cqm220 lines use the same two public tools, fetched from the GitHub release
+`bundles-1.1.0` of `cavli-wireless-public/cqm2xx-bundles` (no login, sha256-checked,
+resumable, about 7 GB unpacked):
+
+- `kp220`: kernel prebuilt tool (clang, build-tools, NDK);
+- `openwrt-prebuilt-backup`: OpenWrt prebuilt tool.
+
+The third item, the Qualcomm tools, is the `--internal` path above.
+
+```bash
+./cqm22x-setup setup cqm220-0 -m /path/to/src     # cqm220-3 is the same
+```
+
+Old customers: the previous Drive files and flags are unchanged. Set
+`CQM_BUNDLE_SOURCE=drive` to take the two tools from Drive as before; the release
+can be redirected with `CQM_BUNDLES_REPO=<owner/repo>`.
+
+Known issue on this branch (work in progress): `setup` for cqm220 still also fetches the
+Buildroot bundle from Drive, which currently fails when Drive's download quota is
+exceeded ("Drive returned a web page"). Use `--no-buildroot` until Buildroot becomes
+opt-in. The qcom bundle for `--internal` is not yet split per line on this branch.
+
 ## Quick start
 
 ```bash
