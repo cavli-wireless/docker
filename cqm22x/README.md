@@ -52,34 +52,6 @@ that runs the tree's own copy: `<meta>/common/sectoolsv2/ext/Linux` (chipcode), 
 `CQM_SECTOOLS=<binary>` overrides it. The internal install mounts the qcom bundle over `/pkg/sectools`,
 which hides the shim.
 
-### cqm220 (cqm220-0 and cqm220-3, one group)
-
-The kernel tool and the OpenWrt tool of both cqm220 lines come from the public GitHub
-release `bundles-1.1.0` of `cavli-wireless-public/cqm2xx-bundles` (no login, sha256-checked,
-resumable, about 7 GB unpacked, staged in `$CQM_ROOT/openwrt/<version>/`):
-
-- `cqm22x-kp220` -> `prebuilts/`: kernel + ABL build tools (clang r450784e, build-tools, NDK);
-- `cqm22x-openwrt-prebuilt-backup` -> `openwrt-prebuilt-backup/`: OpenWrt prebuilt tools and toolchain cache.
-
-The third item, the Qualcomm tools, is the `--internal` path above (the previous single qcom bundle, unchanged).
-
-```bash
-./cqm22x-setup setup cqm220-0 -m /path/to/src     # cqm220-3 is the same
-```
-
-Besides these, `setup` still stages what it staged before: the Buildroot bundle
-(`--no-buildroot` skips it) and the per-line OpenWrt cache (`owrtcache_kuno10` /
-`owrtcache_iot10`), both from Google Drive. If Drive is over its download quota,
-`setup` stops with "Drive returned a web page"; re-run later or pass `--bundle-dir`.
-
-Old customers: nothing is removed. `CQM_BUNDLE_SOURCE=drive` takes the openwrt files
-(`prebuilts.tar.zst`, `openwrt-prebuilt-backup.tar`, `openwrt-toolchain-sdx35.tar.zst`)
-from Drive as before; `CQM_BUNDLES_REPO=<owner/repo>` points the release elsewhere. All
-old flags and a `--bundle-dir` with the old layout work as before.
-
-Not changed on this branch yet: the qcom bundle is still one archive (no per-line split),
-and the cqm211/cqm212 bundles are as before.
-
 ## Quick start
 
 ```bash
@@ -253,7 +225,7 @@ One public image plus several bundles, deliberately kept apart:
 | **Base image** | Ubuntu 22.04, Python 2.7/3.6/3.8/3.10, gcc-10, repo, dtc, rclone, bitbake host tools | ~2.4 GB | everything | `ghcr.io/cavli-wireless-public/cqm22x-buildenv`, public |
 | **qcom** | HEXAGON, LLVM, linaro, sectools, prebuilts | ~13 GB packed, ~60 GB unpacked | every product | supplied by Cavli, mounted read-only |
 | **yocto** | bitbake `DL_DIR` cache + LLVM/ARM toolchain | ~24 GB packed, ~27 GB unpacked | cqm211 | link built into the setup script |
-| **openwrt** | cqm220 kernel tool (`prebuilts`) + OpenWrt prebuilt tools (arm gcc-11.2) | ~2.6 GB packed, ~7 GB unpacked | cqm220-0/3 | public GitHub release `bundles-1.1.0` (Drive with `CQM_BUNDLE_SOURCE=drive`) |
+| **openwrt** | OpenWrt prebuilt host tools and cross toolchain (arm gcc-11.2) | ~2.3 GB packed, ~10 GB unpacked | cqm220-0/3 | link built into the setup script |
 | **openwrt212** | Same, for aarch64 gcc-13.3.0 musl | 1.4 GB packed | cqm212 | link built into the setup script |
 | **kprebuilts212** | kernel clang/rust/build-tools from public CodeLinaro, at `/pkg/prebuilts-kobuk` | 1.7 GB packed, 6.8 GB unpacked | cqm212, on by default (`--no-kernel-prebuilts` skips it) | link built into the setup script |
 
@@ -338,7 +310,7 @@ docker exec -u "$(id -u):$(id -g)" build_cqm22x_jammy_$(whoami) cqm-doctor
 $HOME/cqm22x                     (override with -r)
 ├── qcom/<version>/              read-only, every product mounts it
 ├── yocto/<version>/             cqm211 only — downloads/, llvm-arm-toolchain-ship/
-├── openwrt/<version>/           cqm220-* only — prebuilts/ + openwrt-prebuilt-backup/ (arm gcc-11.2)
+├── openwrt/<version>/           cqm220-* only — openwrt-prebuilt-backup/ (arm gcc-11.2)
 ├── openwrt212/<version>/        cqm212 only — openwrt-prebuilt-backup/ (aarch64 gcc-13.3.0 musl)
 ├── kprebuilts212/<version>/     cqm212 only — prebuilts-kobuk/ (kernel clang/rust/build-tools)
 ├── buildroot/                   /pkg/buildroot — toolchain/ (ro), dl/, ccache/; bundle via setup
@@ -386,9 +358,7 @@ checksum.
 
 - **qcom (v1, `container_docker_helper.sh`)** — hand the resulting link and
   sha256 to each recipient; they pass them to `-u` and `-c`. Never commit them.
-- **openwrt** (cqm220) — assets of the public release `bundles-1.1.0` in `cavli-wireless-public/cqm2xx-bundles`
-  (`cqm22x-kp220-*`, `cqm22x-openwrt-prebuilt-backup-*`, parts `.partNN`); pins are `gh:<tag>[:<parts>]` in `BUNDLE_FILES_openwrt`.
-- **yocto** — make the Drive files link-shareable, then put the
+- **yocto**, **openwrt** — make the Drive files link-shareable, then put the
   links and checksums in `container_docker_helper.sh` (see `URL_yocto` /
   `URL_openwrt` near the top).
 - **qcom (v2, `cqm22x-setup --full`)** — private GitHub release, access via
