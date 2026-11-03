@@ -26,7 +26,14 @@ BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
 
 # openwrt/yocto: public, packed as several files; fetched+unpacked into the
 # same layout container_docker_helper.sh expects. "name sha256 drive_file_id".
+# cqm220 tools, public GitHub release (CQM_BUNDLE_SOURCE=drive picks the old Google Drive files below):
+# prebuilts/ = kernel + ABL build tools (clang r450784e, build-tools, kernel-build-tools, ndk-r23);
+# openwrt-prebuilt-backup = OpenWrt prebuilt tools/toolchain cache for Kuno.LE.1.0.
 BUNDLE_FILES_openwrt='
+cqm22x-kp220-1.1.0.tar.zst 48675a220c6eac5fd7e63d96a2010e70468c0d824a60fa1ebb71c25041827cca gh:bundles-1.1.0
+cqm22x-openwrt-prebuilt-backup-1.1.0.tar.zst 4a8556989f6c26718eb751526d3843d8d14ef35393e5b055a27053d347d223a3 gh:bundles-1.1.0:2
+'
+BUNDLE_FILES_openwrt_drive='
 prebuilts.tar.zst ed17b3427b6dc08535a346503254a5ab34fcf55e8d6e9aa62552d4fd43d6d209 1vmEFhcEq_9BkhZS1itmiWZl5m9r7FdUW
 openwrt-prebuilt-backup.tar 5a53f1289127c9ec8b7542bd16fe0305f8bf51bfcdca779f0f622c8dcc54577e 1qRP8rTwhfLwu43jVsz7bvn0g94z2A-Tl
 openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7455447b2ce6703ae 1yfF85EiRpDeS4yRi8ccDtRLdki5OnDKL
@@ -187,6 +194,33 @@ line_bundles() {
     return 0
 }
 
+# GitHub release assets of the public bundles repo; spec = gh:<tag>[:<n parts>] (parts name.part00..), joined in order.
+BUNDLES_REPO="${CQM_BUNDLES_REPO:-cavli-wireless-public/cqm2xx-bundles}"
+release_fetch() {
+    # $1 = asset name, $2 = gh:<tag>[:<n>], $3 = output path; each part resumes, then parts are joined
+    local tag="${2#gh:}" n=1 i part rc out="$3"
+    [[ "$tag" == *:* ]] && { n="${tag#*:}"; tag="${tag%%:*}"; }
+    local base="https://github.com/$BUNDLES_REPO/releases/download/$tag"
+    if (( n == 1 )); then
+        curl -fL --retry 5 --retry-delay 10 -C - -o "$out.part" "$base/$1" || die "download of $1 failed — re-run to resume"
+        mv -f "$out.part" "$out"; return 0
+    fi
+    : > "$out.join"
+    for ((i = 0; i < n; i++)); do
+        part="$out.p$(printf '%02d' "$i")"
+        [[ -f "$part" ]] || { curl -fL --retry 5 --retry-delay 10 -C - -o "$part.part" "$base/$1.part$(printf '%02d' "$i")" \
+            || die "download of $1.part$(printf '%02d' "$i") failed — re-run to resume"; mv -f "$part.part" "$part"; }
+        cat "$part" >> "$out.join"
+    done
+    mv -f "$out.join" "$out"; rm -f "$out".p[0-9][0-9]
+}
+
+# cqm220 tool pins: GitHub release by default, the old Google Drive files with CQM_BUNDLE_SOURCE=drive.
+openwrt_files() {
+    if [[ "${CQM_BUNDLE_SOURCE:-github}" == drive ]]; then printf '%s\n' "$BUNDLE_FILES_openwrt_drive"
+    else printf '%s\n' "$BUNDLE_FILES_openwrt"; fi
+}
+
 prestage_component() {
     # $1 = component, $2 = "name sha256 id" list, $3 = dest (default $CQM_ROOT/$1/$BUNDLE_VERSION).
     # From --bundle-dir/<component> or Drive (resumed); sha256-checked, unpacked, marked .complete.
@@ -217,7 +251,7 @@ prestage_component() {
             log "$component: using $f"
         elif [[ ! -f "$f" ]]; then
             log "$component: fetching $name"
-            drive_fetch "$id" "$f"
+            if [[ "$id" == gh:* ]]; then release_fetch "$name" "$id" "$f"; else drive_fetch "$id" "$f"; fi
         fi
         [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "$component/$name: no sha256 to check against"
         echo "$sha  $f" | sha256sum -c --quiet - \
@@ -356,7 +390,7 @@ prestage_prebuilts() {
     [[ -d "$dest/prebuilts" ]] && { log "prebuilts already staged at $dest/prebuilts"; return 0; }
 
     local line name sha id
-    line="$(grep '^prebuilts\.tar\.zst ' <<<"$BUNDLE_FILES_openwrt")"
+    line="$(grep '^prebuilts\.tar\.zst ' <<<"$BUNDLE_FILES_openwrt_drive")"
     [[ -n "$line" ]] || die "prebuilts.tar.zst not in the openwrt bundle file list"
     read -r name sha id <<<"$line"
 
@@ -517,7 +551,7 @@ cmd_setup() {
     [[ "$FULL_MODE" == 1 ]] && prestage_qcom
     for p in $new_products; do
         case "$p" in
-            cqm220-0|cqm220-3) prestage_component openwrt "$BUNDLE_FILES_openwrt"
+            cqm220-0|cqm220-3) prestage_component openwrt "$(openwrt_files)"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
