@@ -1,5 +1,5 @@
 #!/bin/bash
-# cqm2xx-setup — Docker v2: one container per user for every product; --external (default,
+# cqm2xx-setup — one container per user for cqm220; --external (default,
 # app build) or --internal (full build). Docs: README.md.
 #   wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm2xx/cqm2xx-setup && chmod +x cqm2xx-setup
 #   ./cqm2xx-setup setup
@@ -81,7 +81,7 @@ QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-$BUNDLE_VERSION}"
 # --external/--customer: app only): flag wins, else state.json, else external.
 FULL_MODE=""
 
-ALL_PRODUCTS="cqm220-0 cqm220-3"
+ALL_PRODUCTS="cqm220"
 
 log()  { printf '\033[36m[cqm2xx-setup]\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m[cqm2xx-setup] error:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -90,8 +90,7 @@ usage() {
     cat <<EOF
 cqm2xx-setup — set up and manage the CQM2xx build container.
 
-  setup [products...]    install/update products and (re)create the container.
-                          Default: all products ($ALL_PRODUCTS).
+  setup [cqm220]         install/update and (re)create the container.
   update                  bring the container's image and bundles up to date.
   status                  show what's installed and the container's mounts.
   version                 print the target image tag and bundle version.
@@ -105,18 +104,16 @@ cqm2xx-setup — set up and manage the CQM2xx build container.
   --name <x>              use a separate, named container instead of the default.
   --bundle-dir <dir>      install bundles from <dir> instead of downloading them.
   --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default).
-  --no-buildroot          cqm220-0/3: skip the Buildroot toolchain + dl bundle.
-  --no-kernel-prebuilts   cqm212: skip the kernel prebuilts bundle (the first build syncs it from CodeLinaro).
+  --no-buildroot          skip the Buildroot toolchain + dl bundle.
   -h, --help              this text.
 
 Everything lives under \$CQM_ROOT (default ~/cqm2xx); container name:
-cqm2xx_<user>. setup stages every prebuilt the products' lines need
-(cqm220-0: Kuno.LE.1.0, cqm220-3: SDX35_IOT.LE.1.0).
+cqm2xx_<user>. setup stages the cqm220 tools: kernel tool, OpenWrt tool
+(and the Qualcomm tools with --internal).
 
 Examples:
-  ./cqm2xx-setup setup cqm220-0 -m /path/to/cqm2xx-src       # first install (external)
+  ./cqm2xx-setup setup cqm220 -m /path/to/src                # first install (external)
   ./cqm2xx-setup setup --internal                            # internal (qcom tools)
-  ./cqm2xx-setup setup cqm220-3                              # add a product
   ./cqm2xx-setup update                                      # bring up to date
 EOF
 }
@@ -177,19 +174,13 @@ bundle_files() { local v="BUNDLE_FILES_$1"; printf '%s\n' "${!v:-}"; }
 
 # Lines per product: "line product bundles..." and what no bundle covers yet (status prints them).
 LINES='
-kuno10  cqm220-0 openwrt owrtcache_kuno10
-iot10   cqm220-3 openwrt owrtcache_iot10
-cqm211  cqm211   yocto prebuilts sstate_cqm211
-cqm212  cqm212   openwrt212 kprebuilts212 owrtfeeds_cqm212
+cqm220  cqm220   openwrt owrtcache_kuno10
 '
 
-# Line bundles of a product (cqm220-0 = Kuno.LE.1.0, cqm220-3 = SDX35_IOT.LE.1.0).
+# Line bundles of a product.
 line_bundles() {
     case "$1" in
-        cqm220-0) echo owrtcache_kuno10;;
-        cqm220-3) echo owrtcache_iot10;;
-        cqm211)   echo sstate_cqm211;;
-        cqm212)   echo owrtfeeds_cqm212;;
+        cqm220) echo owrtcache_kuno10;;
     esac | tr ' ' '\n'
     return 0
 }
@@ -465,8 +456,8 @@ build_run_args() {
 
     local need_qcom=no need_openwrt=no need_openwrt212=no need_yocto=no p
     for p in $products; do
-        case "$p" in cqm220-0|cqm220-3|cqm211|cqm212) need_qcom=yes;; esac
-        case "$p" in cqm220-0|cqm220-3) need_openwrt=yes;; esac
+        case "$p" in cqm220) need_qcom=yes;; esac
+        case "$p" in cqm220) need_openwrt=yes;; esac
         case "$p" in cqm212) need_openwrt212=yes;; esac
         case "$p" in cqm211) need_yocto=yes;; esac
     done
@@ -523,13 +514,13 @@ build_run_args() {
     # per-product writable caches — never shared between products.
     for p in $products; do
         case "$p" in
-            cqm220-0|cqm220-3|cqm211|cqm212)
+            cqm220)
                 mkdir -p "$CQM_ROOT/cache/$p/ccache"
                 RUN_ARGS+=(-v "$CQM_ROOT/cache/$p/ccache:/ccache/$p")
                 ;;
         esac
         case "$p" in
-            cqm220-0|cqm220-3)
+            cqm220)
                 mkdir -p "$CQM_ROOT/cache/$p/openwrt"
                 RUN_ARGS+=(-v "$CQM_ROOT/cache/$p/openwrt:/pkg/openwrt/$p")
                 ;;
@@ -551,7 +542,7 @@ cmd_setup() {
     [[ "$FULL_MODE" == 1 ]] && prestage_qcom
     for p in $new_products; do
         case "$p" in
-            cqm220-0|cqm220-3) prestage_component openwrt "$(openwrt_files)"
+            cqm220) prestage_component openwrt "$(openwrt_files)"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
@@ -624,7 +615,7 @@ cmd_status() {
     local p c d want=""
     for p in $(state_get '.products | keys | join(" ")'); do
         case "$p" in
-            cqm220-0|cqm220-3) want+=" openwrt";;
+            cqm220) want+=" openwrt";;
             cqm211) want+=" yocto";;
             cqm212) want+=" openwrt212"; [[ "$KPREBUILTS" == 1 ]] && want+=" kprebuilts212";;
         esac
