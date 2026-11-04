@@ -2,21 +2,24 @@
 
 Docker build environment for Cavli firmware. The tool is `cqm2xx/cqm2xx-setup`; the old
 one (`cqm22x/`) is unchanged and keeps working. This version covers **cqm220** only
-(one product, `cqm220`). Other lines come later.
+(one product per line: `cqm220`, `cqm212`). Other lines come later.
 
 One container per user, `cqm2xx_<user>`, mirroring the host: same user name,
 uid/gid and `$HOME`, so files a build writes come out owned by you.
 
 ## What gets installed
 
+`setup` with no product installs both lines; name one (`setup cqm212`) to install only it.
+
 | # | Item | Source | Needed for |
 |---|---|---|---|
-| 1 | Qualcomm tools (`qcom`) | private GitHub release, `--internal` only | boot / tz / modem / meta, qcap |
-| 2 | Kernel prebuilt tool (`kp220`: clang, build-tools, NDK) | public GitHub release `bundles-1.1.0` | kernel + ABL |
-| 3 | OpenWrt prebuilt tool (`openwrt-prebuilt-backup`) | public GitHub release `bundles-1.1.0` | OpenWrt app build |
+| 1 | Qualcomm tools (`qcom_common` + `qcom_220` / `qcom_212`) | private GitHub release, `--internal` only | boot / tz / modem / meta, qcap |
+| 2 | Kernel prebuilt tool (cqm220: `kp220`; cqm212: `kp212`; clang, build-tools, NDK) | public GitHub release `bundles-1.1.0` | kernel + ABL |
+| 3 | OpenWrt prebuilt cache (cqm220: `openwrt-prebuilt-backup`; cqm212: `openwrt212`) | public GitHub release `bundles-1.1.0` | OpenWrt tools and toolchain, not rebuilt |
 
-Items 2 and 3 need no login (about 7 GB unpacked, sha256-checked, resumable).
-Item 1 is Cavli only: `cavli-wireless` org membership and a GitHub device login.
+Items 2 and 3 need no login (sha256-checked, resumable). Only the parts of the lines you
+name are downloaded. Item 1 is Cavli only: `cavli-wireless` org membership and a GitHub
+device login on the first download (the login is kept for later runs).
 
 ## Install
 
@@ -33,7 +36,7 @@ and the build run inside that directory.
 Internal (full build, adds the Qualcomm tools):
 
 ```bash
-./cqm2xx-setup setup --internal cqm220 -m /path/to/src
+./cqm2xx-setup setup --internal cqm220 cqm212 -m /path/to/src
 docker exec --user $(id -un) cqm2xx_$(whoami) cqm-doctor
 ```
 
@@ -42,16 +45,25 @@ docker exec --user $(id -un) cqm2xx_$(whoami) cqm-doctor
 ## Build
 
 Get the code and the exact build command from the line's manifest README
-(`cqm22x-manifests`). Typical cqm220 build inside the container:
+(`cqm22x-manifests`, `cqm212-manifests`). Inside the container:
 
 ```bash
 cd /path/to/src/<tree>/chipcode
-./build/build.sh -t mbb-cavli -m app -V 1.0.0 -v perf      # app only (external)
-./build/build.sh -t mbb-cavli -m all -V 1.0.0 -v perf      # full (internal)
+./build/build.sh -t mbb-cavli -m app -V 1.0.0 -v perf      # cqm220 app only (external)
+./build/build.sh -t cavli -m app -v perf                   # cqm212 app only (external)
+./build/build.sh -t <target> -m all -v perf                # full (internal), same -t
 ```
 
-An OpenWrt `app` build can fail at random under parallel make (gdbm, loc-core, and
-similar). Re-run the same command; it passes.
+The OpenWrt tools and toolchain come from the cache, not a rebuild. Measured on a fresh sync
+(`-m app`): cqm220 about 990 s, cqm212 about 1870 s (3440 s without the cache).
+Full builds (`-m all`, internal): cqm220 715 s, cqm212 2360 s.
+
+- cqm212 needs the line's cache support (`cqm212-apps-proc`, branch `cavli_kobuk_le_1_1`,
+  "restore tools/toolchain/hostpkg from a prebuilt cache"). The cache was built with the
+  `apps_proc/owrt` path at most 91 characters, so keep the source root short (at most 56).
+- An OpenWrt `app` build can fail at random under parallel make (gdbm, loc-core, init-mss,
+  and similar). Re-run the same command (or `make package/<path>/clean` first); it passes.
+- Do not move a tree after building: symlinks and the Python venv keep the old path.
 
 ## Offline, old files, other sources
 
@@ -61,9 +73,10 @@ similar). Re-run the same command; it passes.
 
 ## Known state of this version
 
-- Work in progress, reviewed step by step. `setup` downloads only the items above; no Buildroot, no per-line cache.
-- The Qualcomm tools are still one archive (no per-line split yet).
-- Not covered here: other lines (cqm211, cqm212); use the old tool `cqm22x/` for them.
+- Work in progress, reviewed step by step. `setup` downloads only the items above; no Buildroot.
+- The Qualcomm tools are split per line, so `--internal cqm212` does not download cqm220's.
+- `cqm-doctor` reports `/pkg/prebuilts/clang` missing in a cqm212-only container; cqm212 uses `/pkg/prebuilts-kobuk` and builds fine.
+- Not covered here: other lines (cqm211); use the old tool `cqm22x/` for them.
 
 ## Other directories
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# cqm2xx-setup — one container per user for cqm220; --external (default,
+# cqm2xx-setup — one container per user for cqm220 and cqm212; --external (default,
 # app build) or --internal (full build). Docs: README.md.
 #   wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm2xx/cqm2xx-setup && chmod +x cqm2xx-setup
 #   ./cqm2xx-setup setup
@@ -38,13 +38,34 @@ prebuilts.tar.zst ed17b3427b6dc08535a346503254a5ab34fcf55e8d6e9aa62552d4fd43d6d2
 openwrt-prebuilt-backup.tar 5a53f1289127c9ec8b7542bd16fe0305f8bf51bfcdca779f0f622c8dcc54577e 1qRP8rTwhfLwu43jVsz7bvn0g94z2A-Tl
 openwrt-toolchain-sdx35.tar.zst c0fc4e3fed8200e2b081950405fcea2f5c5a7fd19ab932c7455447b2ce6703ae 1yfF85EiRpDeS4yRi8ccDtRLdki5OnDKL
 '
-# cqm212's OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
-BUNDLE_FILES_openwrt212='
+# cqm212 pins (GitHub release; the _drive variants are the old Google Drive files, CQM_BUNDLE_SOURCE=drive).
+# OpenWrt cache (aarch64 gcc-13.3.0 musl); restores into checkouts <= its build path.
+BUNDLE_FILES_openwrt212_drive='
 cqm22x-openwrt212-1.1.0.tar.zst 954481f1ffecfc7ee5b667faa475d3db83f61806316547be922507a262d22816 1ZHhQuajf_gP1B_g7NIyEqHkGQOg_Pqpn
 '
 # cqm212 kernel_platform/prebuilts (public CodeLinaro), mounted at /pkg/prebuilts-kobuk.
-BUNDLE_FILES_kprebuilts212='
+BUNDLE_FILES_kprebuilts212_drive='
 cqm22x-kprebuilts212-1.1.0.tar.zst 98f491651943733c661bac387ca56a59657f9ee2c40a23b71a579ad5271b10e8 1WkN6mfyj1Kn9XzkoD_CtTqQmaKRoCWi3
+'
+BUNDLE_FILES_kprebuilts212='
+cqm22x-kp212-1.1.0.tar.zst 38c6479308490cde79e084cbf1ccae5c86ec219933d5d5d46192fabbf9306983 gh:bundles-1.1.0:2
+'
+BUNDLE_FILES_openwrt212='
+cqm22x-openwrt212-1.1.0.tar.zst e768896b60732706fc3c52f8280e7fdfcde121e1b54356b40d3c21fe980cad92 gh:bundles-1.1.0
+'
+# common = sectools + llvm 16.0.2 (boot cqm220/212) + 16.0.7 (tz cqm220/212); 220 = HEXAGON 8.7.04; 211 = llvm 10.0.3 12.0.3 12.1.1 + HEXAGON 8.5.14;
+# 212 = llvm 14.0.0 + HEXAGON 19.0.01. A __PENDING__ part: --bundle-dir or the private GitHub release.
+BUNDLE_FILES_qcom_common='
+cqm22x-qcom_common-1.1.0.tar.zst __PENDING__ __PENDING__
+'
+BUNDLE_FILES_qcom_220='
+cqm22x-qcom_220-1.1.0.tar.zst __PENDING__ __PENDING__
+'
+BUNDLE_FILES_qcom_211='
+cqm22x-qcom_211-1.1.0.tar.zst __PENDING__ __PENDING__
+'
+BUNDLE_FILES_qcom_212='
+cqm22x-qcom_212-1.1.0.tar.zst __PENDING__ __PENDING__
 '
 BUNDLE_FILES_yocto='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
@@ -75,13 +96,13 @@ cqm22x-sstate_cqm211-1.1.0.tar.zst 7d2da92f8e60cd28c35ce209da7094bbdf26f0bb3b47f
 # in the cavli-wireless org; no password. Login is a device code, done in a
 # throwaway container so it works the same locally and over SSH.
 QCOM_RELEASE_REPO="${CQM_QCOM_RELEASE_REPO:-cavli-wireless/cqm2xx-qcom-bundles}"
-QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-$BUNDLE_VERSION}"
+QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-split-$BUNDLE_VERSION}"
 
 # internal (--internal/--full: full build, qcom tools) vs external (default,
 # --external/--customer: app only): flag wins, else state.json, else external.
 FULL_MODE=""
 
-ALL_PRODUCTS="cqm220"
+ALL_PRODUCTS="cqm220 cqm212"
 
 log()  { printf '\033[36m[cqm2xx-setup]\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m[cqm2xx-setup] error:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -90,7 +111,7 @@ usage() {
     cat <<EOF
 cqm2xx-setup — set up and manage the CQM2xx build container.
 
-  setup [cqm220]         install/update and (re)create the container.
+  setup [cqm220] [cqm212]  install/update and (re)create the container (default: both).
   update                  bring the container's image and bundles up to date.
   status                  show what's installed and the container's mounts.
   version                 print the target image tag and bundle version.
@@ -107,11 +128,12 @@ cqm2xx-setup — set up and manage the CQM2xx build container.
   -h, --help              this text.
 
 Everything lives under \$CQM_ROOT (default ~/cqm2xx); container name:
-cqm2xx_<user>. setup stages the cqm220 tools: kernel tool, OpenWrt tool
+cqm2xx_<user>. setup stages the kernel tool and the OpenWrt cache of each product
 (and the Qualcomm tools with --internal).
 
 Examples:
   ./cqm2xx-setup setup cqm220 -m /path/to/src                # first install (external)
+  ./cqm2xx-setup setup cqm212 -m /path/to/src                # add cqm212
   ./cqm2xx-setup setup --internal                            # internal (qcom tools)
   ./cqm2xx-setup update                                      # bring up to date
 EOF
@@ -205,7 +227,11 @@ release_fetch() {
     mv -f "$out.join" "$out"; rm -f "$out".p[0-9][0-9]
 }
 
-# cqm220 tool pins: GitHub release by default, the old Google Drive files with CQM_BUNDLE_SOURCE=drive.
+# Tool pins: GitHub release by default, the old Google Drive files with CQM_BUNDLE_SOURCE=drive.
+pick_files() {
+    local v="BUNDLE_FILES_$1"; [[ "${CQM_BUNDLE_SOURCE:-github}" == drive ]] && v="${v}_drive"
+    printf '%s\n' "${!v}"
+}
 openwrt_files() {
     if [[ "${CQM_BUNDLE_SOURCE:-github}" == drive ]]; then printf '%s\n' "$BUNDLE_FILES_openwrt_drive"
     else printf '%s\n' "$BUNDLE_FILES_openwrt"; fi
@@ -260,36 +286,76 @@ prestage_component() {
     log "$component $BUNDLE_VERSION ready ($ok_size) at $dest"
 }
 
+
+# Qualcomm tool parts of a product (always the common one).
+qcom_parts() {
+    local p out=" qcom_common"
+    for p in $1; do
+        case "$p" in
+            cqm220) out+=" qcom_220";;
+            cqm212) out+=" qcom_212";;
+        esac
+    done
+    tr ' ' '\n' <<<"$out" | awk 'NF && !s[$0]++'
+}
+
+# Runs inside a throwaway container: gh device login (if needed), then for each missing part download its release assets,
+# verify, reassemble split files (name.partNNN) and unpack into $CQM_ROOT/<part>/<version>.
+qcom_fetch_script() {
+    cat <<'SCRIPT'
+set -euo pipefail
+gh auth status --hostname github.com >/dev/null 2>&1 \
+    || gh auth login --hostname github.com --git-protocol https --web \
+    || { echo "qcom: GitHub login failed" >&2; exit 1; }
+for part in $QCOM_PARTS; do
+    name="cqm22x-$part-$QCOM_VERSION.tar.zst"
+    stage="$QCOM_STAGE/$part"; dest="$QCOM_ROOT/$part/$QCOM_VERSION"
+    rm -rf "$stage"; mkdir -p "$stage" "$dest"
+    gh release download "$QCOM_TAG" -R "$QCOM_REPO" -D "$stage" --clobber -p "$name*" \
+        || { echo "qcom: could not download $name from $QCOM_REPO $QCOM_TAG — not an org member, or the asset is missing" >&2; exit 1; }
+    cd "$stage"
+    for p in "$name".part[0-9][0-9][0-9]; do
+        [[ -e "$p" ]] || continue
+        [[ -e "$name" ]] || cat "$name".part[0-9][0-9][0-9] > "$name"
+        break
+    done
+    rm -f -- "$name".part[0-9][0-9][0-9]
+    sha256sum -c "$name.sha256" || { echo "qcom: checksum mismatch for $name — nothing installed" >&2; exit 1; }
+    tar --use-compress-program="zstd -d -T0 --long=31" -xf "$name" -C "$dest"
+    printf '%s\n' "$QCOM_VERSION" > "$dest/BUNDLE_VERSION"
+    touch "$dest/.complete"
+    cd /; rm -rf "$stage"
+done
+SCRIPT
+}
+
 prestage_qcom_local() {
-    # $1 = dest. --bundle-dir/qcom on disk: plain per-file layout, no
-    # password — offline path, used instead of the GitHub release.
+    # $1 = dest. --bundle-dir/qcom on disk (old layout: bare names, big files as name.partNNN): offline path.
     local dest="$1" src="$BUNDLE_DIR/qcom"
     [[ -d "$src" ]] || die "--bundle-dir: $src not found"
     local local_bv; local_bv="$(cat "$src/BUNDLE_VERSION" 2>/dev/null || true)"
     [[ "$local_bv" == "$BUNDLE_VERSION" ]] \
         || die "--bundle-dir: $src/BUNDLE_VERSION is '$local_bv', expected $BUNDLE_VERSION"
     [[ -f "$src/SHA256SUMS" ]] || die "--bundle-dir: $src/SHA256SUMS missing"
-    ( cd "$BUNDLE_DIR" && sha256sum --ignore-missing -c "qcom/SHA256SUMS" ) \
+    ( cd "$src" && sha256sum -c SHA256SUMS >/dev/null ) \
         || die "qcom: checksum mismatch under $src"
-
     log "qcom: local bundle at $src"
     mkdir -p "$dest/qct/software"
-    local f name
-    for f in "$src"/*.tar.zst "$src"/*.tar; do
+    local f name base zst=(--use-compress-program="zstd -d -T0 --long=31")
+    for f in "$src"/*.tar.zst "$src"/*.tar.zst.part000 "$src"/*.tar; do
         [[ -e "$f" ]] || continue
-        name="$(basename "$f")"
-        case "$name" in
-            sectools.tar.zst|sectools.tar)
-                tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest";;
-            *.tar.zst) tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest/qct/software";;
-            *.tar)     tar -xf "$f" -C "$dest/qct/software";;
+        name="$(basename "$f")"; base="${name%.part000}"
+        case "$base" in
+            sectools.tar.zst) cat "$src/$base"* | tar "${zst[@]}" -xf - -C "$dest";;
+            *.tar.zst)        cat "$src/$base"* | tar "${zst[@]}" -xf - -C "$dest/qct/software";;
+            *.tar)            tar -xf "$f" -C "$dest/qct/software";;
         esac
     done
 }
 
-# Runs inside a throwaway container: gh device login (if needed), download
+# Legacy (single qcom bundle, whole release): runs inside a throwaway container: gh device login (if needed), download
 # the qcom release, verify, reassemble split parts, unpack. $1 = dest.
-qcom_fetch_script() {
+qcom_fetch_script_legacy() {
     cat <<'SCRIPT'
 set -euo pipefail
 gh auth status --hostname github.com >/dev/null 2>&1 \
@@ -322,7 +388,9 @@ touch "$QCOM_DEST/.complete"
 SCRIPT
 }
 
-prestage_qcom() {
+# Old single-bundle layout (state qcom/<version>, qct/software + sectools): kept for old --bundle-dir/qcom dirs
+# and for CQM_QCOM_LEGACY=1 (whole release of tag qcom-<version>).
+prestage_qcom_legacy() {
     local dest="$CQM_ROOT/qcom/$BUNDLE_VERSION"
     [[ -f "$dest/.complete" ]] && { log "qcom $BUNDLE_VERSION already staged at $dest"; return 0; }
     mkdir -p "$CQM_ROOT/cache" "$dest"
@@ -333,38 +401,97 @@ prestage_qcom() {
         log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
         return 0
     fi
-    log "qcom bundle: GitHub login (device code) + download from $QCOM_RELEASE_REPO tag $QCOM_RELEASE_TAG"
+    local tag="qcom-$BUNDLE_VERSION"
+    log "qcom (legacy bundle): GitHub login (device code) + download from $QCOM_RELEASE_REPO tag $tag"
     mkdir -p "$CQM_ROOT/home"
-    # -t only with a real terminal on stdin — a plain -i still shows the
-    # device code over a non-interactive SSH command or a background run.
     local tty_flag=-i; [[ -t 0 ]] && tty_flag=-it
-    # QCOM_STAGE lives under cache/ — must be mounted, or the container can't
-    # create it (and 8+ GB would land in the container layer instead).
     local qlog; qlog="$(mktemp)"
     set +e
     docker run --rm "$tty_flag" \
         -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)" -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)" -e "CQM_HOME=$HOME" \
-        -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$QCOM_RELEASE_TAG" \
-        -e "QCOM_STAGE=$CQM_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG" -e "QCOM_DEST=$dest" \
+        -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$tag" \
+        -e "QCOM_STAGE=$CQM_ROOT/cache/qcom-release-$tag" -e "QCOM_DEST=$dest" \
         -v "$CQM_ROOT/home:$HOME" -v "$CQM_ROOT/qcom:$CQM_ROOT/qcom" -v "$CQM_ROOT/cache:$CQM_ROOT/cache" \
-        "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script)" 2>&1 | tee "$qlog"
+        "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script_legacy)" 2>&1 | tee "$qlog"
     local rc=${PIPESTATUS[0]}
     set -e
-    # surface the container's own cause (login/access/download/checksum), not a generic message
-    if [[ $rc -ne 0 ]]; then
-        die "qcom bundle: nothing installed — $(tail -n 3 "$qlog" | tr '\n' ' ')"
-    fi
+    [[ $rc -eq 0 ]] || die "qcom bundle: nothing installed — $(tail -n 3 "$qlog" | tr '\n' ' ')"
     rm -f "$qlog"
     [[ -f "$dest/.complete" ]] || die "qcom bundle: did not complete — nothing installed"
-    rm -rf "$CQM_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG"
+    rm -rf "$CQM_ROOT/cache/qcom-release-$tag"
     log "qcom $BUNDLE_VERSION ready ($(du -sh "$dest" | cut -f1)) at $dest"
+}
+
+# Stage the Qualcomm tool parts $1 = product list needs: --bundle-dir/<part>/, else the private GitHub release.
+prestage_qcom() {
+    local part missing=""
+    # old layout: an old --bundle-dir/qcom dir (no split parts beside it), an already staged qcom/<version>, or CQM_QCOM_LEGACY=1
+    if [[ "${CQM_QCOM_LEGACY:-0}" == 1 || -f "$CQM_ROOT/qcom/$BUNDLE_VERSION/.complete" \
+          || ( -n "$BUNDLE_DIR" && -d "$BUNDLE_DIR/qcom" && ! -d "$BUNDLE_DIR/qcom_common" ) ]]; then
+        prestage_qcom_legacy; return 0
+    fi
+    for part in $(qcom_parts "$1"); do
+        if [[ -n "$BUNDLE_DIR" && -d "$BUNDLE_DIR/$part" ]]; then
+            prestage_component "$part" "$(bundle_files "$part")"
+        elif [[ -f "$CQM_ROOT/$part/$BUNDLE_VERSION/.complete" ]]; then
+            log "$part $BUNDLE_VERSION already staged at $CQM_ROOT/$part/$BUNDLE_VERSION"
+        else
+            missing+=" $part"
+        fi
+    done
+    [[ -n "$missing" ]] || return 0
+    log "qcom:$missing — GitHub login (device code) + download from $QCOM_RELEASE_REPO tag $QCOM_RELEASE_TAG"
+    mkdir -p "$CQM_ROOT/home" "$CQM_ROOT/cache"
+    # -t only with a real terminal on stdin — a plain -i still shows the device code over SSH or a background run.
+    local tty_flag=-i; [[ -t 0 ]] && tty_flag=-it
+    local qlog rc; qlog="$(mktemp)"
+    set +e
+    docker run --rm "$tty_flag" \
+        -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)" -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)" -e "CQM_HOME=$HOME" \
+        -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$QCOM_RELEASE_TAG" -e "QCOM_VERSION=$BUNDLE_VERSION" \
+        -e "QCOM_PARTS=${missing# }" -e "QCOM_ROOT=$CQM_ROOT" -e "QCOM_STAGE=$CQM_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG" \
+        -v "$CQM_ROOT/home:$HOME" -v "$CQM_ROOT:$CQM_ROOT" \
+        "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script)" 2>&1 | tee "$qlog"
+    rc=${PIPESTATUS[0]}
+    set -e
+    [[ $rc -eq 0 ]] || die "qcom: nothing installed — $(tail -n 3 "$qlog" | tr '\n' ' ')"
+    rm -f "$qlog"
+    for part in $missing; do
+        [[ -f "$CQM_ROOT/$part/$BUNDLE_VERSION/.complete" ]] || die "qcom: $part did not complete"
+        log "$part $BUNDLE_VERSION ready ($(du -sh "$CQM_ROOT/$part/$BUNDLE_VERSION" | cut -f1))"
+    done
+}
+
+# Mount specs for the Qualcomm tools of $1 = product list: one mount per staged tool version (llvm 16.0.2.0 is also
+# mounted as 16.0.2, where a build asks for it), so the parts add up. An old single qcom/<version> bundle still mounts whole.
+qcom_mounts() {
+    local qold="$CQM_ROOT/qcom/$BUNDLE_VERSION" part root d rel
+    if [[ -f "$qold/.complete" ]]; then
+        echo "$qold/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
+        echo "$qold/qct/software/arm:/pkg/qct/software/arm:ro"
+        echo "$qold/qct/software/llvm:/pkg/qct/software/llvm:ro"
+        echo "$qold/sectools:/pkg/sectools:ro"
+        return
+    fi
+    for part in $(qcom_parts "$1"); do
+        root="$CQM_ROOT/$part/$BUNDLE_VERSION"
+        [[ -f "$root/.complete" ]] || continue
+        [[ -d "$root/sectools" ]] && echo "$root/sectools:/pkg/sectools:ro"
+        for d in "$root"/qct/software/llvm/release/arm/*/ "$root"/qct/software/HEXAGON_Tools/*/ "$root"/qct/software/arm/*/; do
+            [[ -d "$d" ]] || continue
+            d="${d%/}"; rel="${d#"$root"/}"
+            echo "$d:/pkg/$rel:ro"
+            [[ "$rel" == qct/software/llvm/release/arm/*.*.*.* ]] && echo "$d:/pkg/${rel%.*}:ro"
+        done
+    done
+    return 0
 }
 
 prestage_buildroot() { prestage_optional buildroot "$CQM_ROOT/buildroot"; }
 
 prestage_optional() {
     # $1 = component, $2 = dest (optional). Unpublished and not in --bundle-dir: skipped.
-    local files; files="$(bundle_files "$1")"
+    local files; files="$(pick_files "$1")"
     if [[ "$files" == *"__PENDING__"* && ! -d "${BUNDLE_DIR:-/nonexistent}/$1" ]]; then
         log "$1 bundle not published yet — skipped (the first build fetches or builds it)"; return 0
     fi
@@ -455,7 +582,7 @@ build_run_args() {
 
     local need_qcom=no need_openwrt=no need_openwrt212=no need_yocto=no p
     for p in $products; do
-        case "$p" in cqm220) need_qcom=yes;; esac
+        case "$p" in cqm220|cqm212) need_qcom=yes;; esac
         case "$p" in cqm220) need_openwrt=yes;; esac
         case "$p" in cqm212) need_openwrt212=yes;; esac
         case "$p" in cqm211) need_yocto=yes;; esac
@@ -466,13 +593,8 @@ build_run_args() {
     [[ "$FULL_MODE" == 1 ]] || need_qcom=no
 
     if [[ "$need_qcom" == yes ]]; then
-        local qcom_dir="$CQM_ROOT/qcom/$BUNDLE_VERSION"
-        RUN_ARGS+=(-v "$qcom_dir/qct/software/HEXAGON_Tools:/pkg/qct/software/HEXAGON_Tools:ro"
-                   -v "$qcom_dir/qct/software/arm:/pkg/qct/software/arm:ro"
-                   -v "$qcom_dir/qct/software/llvm:/pkg/qct/software/llvm:ro"
-                   -v "$qcom_dir/sectools:/pkg/sectools:ro")
-        [[ -f "$qcom_dir/BUNDLE_VERSION" ]]  && RUN_ARGS+=(-v "$qcom_dir/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro")
-        [[ -r "$qcom_dir/SHA256SUMS.spot" ]] && RUN_ARGS+=(-v "$qcom_dir/SHA256SUMS.spot:/pkg/SHA256SUMS.spot:ro")
+        local spec
+        while read -r spec; do [[ -n "$spec" ]] && RUN_ARGS+=(-v "$spec"); done < <(qcom_mounts "$products")
     fi
     # shared kernel-build prebuilts (public; LE.1.0 lines and cqm211 link /pkg/prebuilts), both paths
     local prebuilts_dir; prebuilts_dir="$(resolve_prebuilts_dir "$CQM_ROOT/qcom/$BUNDLE_VERSION")"
@@ -483,8 +605,9 @@ build_run_args() {
         [[ -f "$openwrt_dir/BUNDLE_VERSION" ]] && RUN_ARGS+=(-v "$openwrt_dir/BUNDLE_VERSION:/pkg/OPENWRT_VERSION:ro")
     fi
     if [[ "$need_openwrt212" == yes ]]; then
-        RUN_ARGS+=(-v "$CQM_ROOT/openwrt212/$BUNDLE_VERSION/openwrt-prebuilt-backup:/pkg/cqm212-openwrt-prebuilt:ro"
-                   -e "OPENWRT_PREBUILT_CACHE_DIR=/pkg/cqm212-openwrt-prebuilt")
+        local oc="$CQM_ROOT/openwrt212/$BUNDLE_VERSION/openwrt-prebuilt-backup"
+        [[ -d "$oc" ]] && RUN_ARGS+=(-v "$oc:/pkg/cqm212-openwrt-prebuilt:ro"
+                                     -e "OPENWRT_PREBUILT_CACHE_DIR=/pkg/cqm212-openwrt-prebuilt")
         local kp="$CQM_ROOT/kprebuilts212/$BUNDLE_VERSION/prebuilts-kobuk"
         [[ "$KPREBUILTS" == 1 && -d "$kp" ]] && RUN_ARGS+=(-v "$kp:/pkg/prebuilts-kobuk:ro")
     fi
@@ -513,7 +636,7 @@ build_run_args() {
     # per-product writable caches — never shared between products.
     for p in $products; do
         case "$p" in
-            cqm220)
+            cqm220|cqm212)
                 mkdir -p "$CQM_ROOT/cache/$p/ccache"
                 RUN_ARGS+=(-v "$CQM_ROOT/cache/$p/ccache:/ccache/$p")
                 ;;
@@ -538,7 +661,7 @@ cmd_setup() {
 
     # external (default): never fetch/stage/decrypt qcom. internal (or a
     # previous internal setup recorded in state.json): stage it.
-    [[ "$FULL_MODE" == 1 ]] && prestage_qcom
+    [[ "$FULL_MODE" == 1 ]] && prestage_qcom "$new_products"
     for p in $new_products; do
         case "$p" in
             cqm220) prestage_component openwrt "$(openwrt_files)"
@@ -546,8 +669,8 @@ cmd_setup() {
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-            cqm212)            prestage_component openwrt212 "$BUNDLE_FILES_openwrt212"
-                               [[ "$KPREBUILTS" == 1 ]] && prestage_component kprebuilts212 "$BUNDLE_FILES_kprebuilts212"
+            cqm212)            prestage_optional openwrt212
+                               [[ "$KPREBUILTS" == 1 ]] && prestage_optional kprebuilts212
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
         esac
     done
@@ -620,7 +743,7 @@ cmd_status() {
         esac
         want+=" $(line_bundles "$p" | tr '\n' ' ')"
     done
-    [[ "$FULL_MODE" == 1 ]] && want="qcom $want"
+    [[ "$FULL_MODE" == 1 ]] && want="$(qcom_parts "$(state_get '.products | keys | join(" ")')" | tr '\n' ' ') $want"
     for c in $(tr ' ' '\n' <<<"$want" | awk 'NF && !seen[$0]++'); do
         d="$CQM_ROOT/$c/$BUNDLE_VERSION"
         if [[ -f "$d/.complete" ]]; then
@@ -638,7 +761,7 @@ cmd_status() {
     while read -r line prod comps; do
         [[ -n "$line" && "$installed" == *" $prod "* ]] || continue
         miss=""
-        [[ "$FULL_MODE" == 1 ]] && comps="qcom $comps"
+        [[ "$FULL_MODE" == 1 ]] && comps="$(qcom_parts "$prod" | tr '\n' ' ') $comps"
         for c in $comps; do
             case "$c" in
                 prebuilts) [[ -n "$(resolve_prebuilts_dir "$CQM_ROOT/qcom/$BUNDLE_VERSION")" ]] && continue;;
