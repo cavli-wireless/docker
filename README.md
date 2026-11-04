@@ -1,8 +1,8 @@
 # cqm2xx build environment
 
 Docker build environment for Cavli firmware. The tool is `cqm2xx/cqm2xx-setup`; the old
-one (`cqm22x/`) is unchanged and keeps working. This version covers **cqm220** only
-(one product per line: `cqm220`, `cqm212`). Other lines come later.
+one (`cqm22x/`) is unchanged and keeps working. This version covers **cqm220** and
+**cqm212** (one product per line: `cqm220`, `cqm212`). Other lines come later.
 
 One container per user, `cqm2xx_<user>`, mirroring the host: same user name,
 uid/gid and `$HOME`, so files a build writes come out owned by you.
@@ -54,13 +54,23 @@ cd /path/to/src/<tree>/chipcode
 ./build/build.sh -t <target> -m all -v perf                # full (internal), same -t
 ```
 
-The OpenWrt tools and toolchain come from the cache, not a rebuild. Measured on a fresh sync
-(`-m app`): cqm220 about 990 s, cqm212 about 1870 s (3440 s without the cache).
-Full builds (`-m all`, internal): cqm220 715 s, cqm212 2360 s.
+The OpenWrt tools and toolchain come from the cache, not a rebuild. Measured on a fresh sync,
+`-m app`: cqm220 (branch `cavli_kuno_le_1_0`) 990 s, cqm212 (`main`) 1865 s (3437 s without the cache).
 
+- **Path limit (important).** The cache can only be restored into a tree whose `apps_proc/owrt`
+  path is no longer than the path the cache was built at. Past that the cache cannot be restored: the build stops with an error or rebuilds the tools and
+  toolchain from scratch (slow).
+  Keep the source root short:
+
+  | Line | Cache built at | Source root at most |
+  |---|---|---|
+  | cqm220 | 56 characters | 32 (the tree has `/chipcode/apps_proc/owrt` below it) |
+  | cqm212 | 91 characters | 56 (the tree has `/chipcode/Kobuk_apps/apps_proc/owrt` below it) |
+
+  Example: `/mnt/SSD_2TB/cqm220` is fine; `/mnt/SSD_M2/cav/workspaces/cqm220` (33) is too long.
 - cqm212 needs the line's cache support (`cqm212-apps-proc`, branch `cavli_kobuk_le_1_1`,
-  "restore tools/toolchain/hostpkg from a prebuilt cache"). The cache was built with the
-  `apps_proc/owrt` path at most 91 characters, so keep the source root short (at most 56).
+  "restore tools/toolchain/hostpkg from a prebuilt cache"). Without it the build still works but
+  rebuilds the tools and toolchain.
 - An OpenWrt `app` build can fail at random under parallel make (gdbm, loc-core, init-mss,
   and similar). Re-run the same command (or `make package/<path>/clean` first); it passes.
 - Do not move a tree after building: symlinks and the Python venv keep the old path.
