@@ -9,23 +9,30 @@ uid/gid and `$HOME`, so files a build writes come out owned by you.
 
 ## What gets installed
 
-`setup` with no product installs both lines; name one (`setup cqm212`) to install only it.
+`setup` with no product installs both lines; name one (`setup cqm212`) to add only that line (a line already installed stays).
 
 | # | Item | Source | Needed for |
 |---|---|---|---|
-| 1 | Qualcomm tools (`qcom_common` + `qcom_220` / `qcom_212`) | private GitHub release, `--internal` only | boot / tz / modem / meta, qcap |
+| 1 | Qualcomm tools (`qcom_common` + `qcom_220` / `qcom_212`) | private GitHub release, `--internal` only | boot / tz / modem / meta |
 | 2 | Kernel prebuilt tool (cqm220: `kp220`; cqm212: `kp212`; clang, build-tools, NDK) | public GitHub release `bundles-1.1.0` | kernel + ABL |
 | 3 | OpenWrt prebuilt cache (cqm220: `openwrt-prebuilt-backup`; cqm212: `openwrt212`) | public GitHub release `bundles-1.1.0` | OpenWrt tools and toolchain, not rebuilt |
 
 Items 2 and 3 need no login (sha256-checked, resumable). Only the parts of the lines you
 name are downloaded. Item 1 is Cavli only: `cavli-wireless` org membership and a GitHub
-device login on the first download (the login is kept for later runs).
+device login on the first download (the login is stored under `$CQM_ROOT/home` and reused).
+
+## Before you start
+
+- Linux host with Docker (your user can run `docker`), plus `jq`, `curl`, `tar`, `zstd`, `sha256sum`.
+- Network access to `github.com` and `ghcr.io`; free disk for the bundles (several GB per line).
+- Everything is kept under `$CQM_ROOT` (default `~/cqm2xx`). The container's `$HOME` is
+  `$CQM_ROOT/home`, so your own git config and shell files are not in it.
 
 ## Install
 
 ```bash
 wget https://raw.githubusercontent.com/cavli-wireless/docker/main/cqm2xx/cqm2xx-setup && chmod +x cqm2xx-setup
-./cqm2xx-setup setup cqm220 -m /path/to/src       # flags go after "setup"
+./cqm2xx-setup setup cqm220 -m /path/to/src
 ./cqm2xx-setup status
 docker exec -it --user $(id -un) -e HOME=$HOME cqm2xx_$(whoami) bash -l
 ```
@@ -40,7 +47,10 @@ Internal (full build, adds the Qualcomm tools):
 docker exec --user $(id -un) cqm2xx_$(whoami) cqm-doctor
 ```
 
-`update` brings the image and bundles up to date with the same mounts and mode.
+`setup` and `update` recreate the container (stop anything running in it). The mode is sticky:
+the last `--internal` is reused until you pass `--external`. `update` keeps the mounts and mode,
+but takes the image and bundle versions from the script you have: download the newer script first.
+`--name <x>` makes a separate container and state (`cqm2xx_<user>_<x>`).
 
 ## Build
 
@@ -77,8 +87,14 @@ The OpenWrt tools and toolchain come from the cache, not a rebuild. Measured on 
 
 ## Offline, old files, other sources
 
-- `--bundle-dir <dir>` (or `CQM_BUNDLE_DIR`) reads `<dir>/<component>/` instead of downloading.
-- `CQM_BUNDLE_SOURCE=drive` takes items 2 and 3 from the old Google Drive files.
+- `--bundle-dir <dir>` (or `CQM_BUNDLE_DIR`) reads bundles from `<dir>/<component>/` instead of downloading;
+  the directory is remembered for later runs and `update`. A component without a directory is
+  still downloaded (qcom would ask for the GitHub login). Components and files:
+  - `openwrt` (cqm220): `cqm22x-kp220-1.1.0.tar.zst`, `cqm22x-openwrt-prebuilt-backup-1.1.0.tar.zst`
+  - `kprebuilts212`: `cqm22x-kp212-1.1.0.tar.zst`; `openwrt212`: `cqm22x-openwrt212-1.1.0.tar.zst`
+  - `--internal`: `qcom_common`, `qcom_220`, `qcom_212`, each `cqm22x-<part>-1.1.0.tar.zst` (joined, not `.partNN`)
+  - every `<component>/` also holds a `BUNDLE_VERSION` file containing `1.1.0`.
+- `CQM_BUNDLE_SOURCE=drive` takes items 2 and 3 from the old Google Drive files (not remembered by `update`).
 - `CQM_BUNDLES_REPO=<owner/repo>` points the public release elsewhere.
 
 ## Known state of this version
