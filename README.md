@@ -1,7 +1,7 @@
 # cqm2xx build environment
 
 Docker build environment for Cavli firmware. The tool is `cqm2xx/cqm2xx-setup`; the old
-one (`cqm22x/`) is unchanged and keeps working. This version covers **cqm220** and
+one (`cqm22x/`) is unchanged and keeps working. This version covers **cqm220**,
 **cqm212** and **cqm211** (one product per line: `cqm220`, `cqm212`, `cqm211`).
 
 One container per user, `cqm2xx_<user>`, mirroring the host: same user name,
@@ -20,7 +20,7 @@ uid/gid and `$HOME`, so files a build writes come out owned by you.
 
 cqm211 uses items 4 and 1 only (no kernel prebuilt tool, no OpenWrt cache).
 
-Items 2 and 3 need no login (sha256-checked, resumable). Only the parts of the lines you
+Items 2, 3 and 4 need no login (sha256-checked, resumable). Only the parts of the lines you
 name are downloaded. Item 1 is Cavli only: `cavli-wireless` org membership and a GitHub
 device login on the first download (the login is stored under `$CQM_ROOT/home` and reused).
 
@@ -103,7 +103,7 @@ cqm211 (`main`) 3764 s (5591 s without the download cache).
   - `yocto` (cqm211): `cqm22x-yocto-downloads-1.1.0.tar.zst`
   - `--internal`: `qcom_common`, `qcom_220`, `qcom_212`, `qcom_211`, each `cqm22x-<part>-1.1.0.tar.zst` (joined, not `.partNN`)
   - every `<component>/` also holds a `BUNDLE_VERSION` file containing `1.1.0`.
-- `CQM_BUNDLE_SOURCE=drive` takes items 2 and 3 from the old Google Drive files (not remembered by `update`).
+- `CQM_BUNDLE_SOURCE=drive` takes items 2, 3 and 4 from the old Google Drive files (for cqm211 that stages the old `downloads` and `llvm-arm-toolchain-ship` packs) (not remembered by `update`).
 - `CQM_BUNDLES_REPO=<owner/repo>` points the public release elsewhere.
 
 ## Known state of this version
