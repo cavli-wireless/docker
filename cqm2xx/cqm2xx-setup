@@ -67,9 +67,13 @@ cqm22x-qcom_211-1.1.0.tar.zst __PENDING__ __PENDING__
 BUNDLE_FILES_qcom_212='
 cqm22x-qcom_212-1.1.0.tar.zst __PENDING__ __PENDING__
 '
-BUNDLE_FILES_yocto='
+BUNDLE_FILES_yocto_drive='
 downloads.tar.zst 8b6f1971b3790e7d7343b304208c7962e096a0c83f2cad81d169188a2e427514 1NIXsYGnvCbu1LUUju-xB4KcchlPrqRLi
 llvm-arm-toolchain-ship.tar.zst c75306d1da371d6ea72a2c4dfd8c58e60659373a5e076878111e95e16d2bd7ad 1Rb9k9CsZ2u7kHVpPzIL8ytcq7tygqidz
+'
+# cqm211 Yocto DL_DIR (public upstream sources only), public GitHub release; /pkg/yocto/downloads.
+BUNDLE_FILES_yocto='
+cqm22x-yocto-downloads-1.1.0.tar.zst 936d6a1409e869c55a19ad8c9f14fc423845e3a3c8c844e5eab4fa59c1d3ae5a gh:bundles-1.1.0:13
 '
 # Buildroot toolchain + dl cache (pack-buildroot.sh), extracted into <root>/buildroot = /pkg/buildroot.
 BUNDLE_FILES_buildroot='
@@ -102,7 +106,7 @@ QCOM_RELEASE_TAG="${CQM_QCOM_RELEASE_TAG:-qcom-split-$BUNDLE_VERSION}"
 # --external/--customer: app only): flag wins, else state.json, else external.
 FULL_MODE=""
 
-ALL_PRODUCTS="cqm220 cqm212"
+ALL_PRODUCTS="cqm220 cqm212 cqm211"
 
 log()  { printf '\033[36m[cqm2xx-setup]\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m[cqm2xx-setup] error:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -111,7 +115,7 @@ usage() {
     cat <<EOF
 cqm2xx-setup — set up and manage the CQM2xx build container.
 
-  setup [cqm220] [cqm212]  install/update and (re)create the container (default: both).
+  setup [cqm220] [cqm212] [cqm211]  install/update and (re)create the container (default: all three).
   update                  bring the container's image and bundles up to date.
   status                  show what's installed and the container's mounts.
   version                 print the target image tag and bundle version.
@@ -133,7 +137,7 @@ cqm2xx_<user>. setup stages the kernel tool and the OpenWrt cache of each produc
 
 Examples:
   ./cqm2xx-setup setup cqm220 -m /path/to/src                # first install (external)
-  ./cqm2xx-setup setup cqm212 -m /path/to/src                # add cqm212
+  ./cqm2xx-setup setup cqm212 -m /path/to/src                # add cqm212 (also cqm211)
   ./cqm2xx-setup setup --internal                            # internal (qcom tools)
   ./cqm2xx-setup update                                      # bring up to date
 EOF
@@ -294,6 +298,7 @@ qcom_parts() {
         case "$p" in
             cqm220) out+=" qcom_220";;
             cqm212) out+=" qcom_212";;
+            cqm211) out+=" qcom_211";;
         esac
     done
     tr ' ' '\n' <<<"$out" | awk 'NF && !s[$0]++'
@@ -582,7 +587,7 @@ build_run_args() {
 
     local need_qcom=no need_openwrt=no need_openwrt212=no need_yocto=no p
     for p in $products; do
-        case "$p" in cqm220|cqm212) need_qcom=yes;; esac
+        case "$p" in cqm220|cqm212|cqm211) need_qcom=yes;; esac
         case "$p" in cqm220) need_openwrt=yes;; esac
         case "$p" in cqm212) need_openwrt212=yes;; esac
         case "$p" in cqm211) need_yocto=yes;; esac
@@ -614,8 +619,8 @@ build_run_args() {
     if [[ "$need_yocto" == yes ]]; then
         local yocto_dir="$CQM_ROOT/yocto/$BUNDLE_VERSION"
         # DL_DIR = the staged downloads, writable (Yocto adds files, .done stamps and locks)
-        RUN_ARGS+=(-v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro"
-                   -v "$yocto_dir/downloads:/pkg/yocto/downloads")
+        RUN_ARGS+=(-v "$yocto_dir/downloads:/pkg/yocto/downloads")
+        [[ -d "$yocto_dir/llvm-arm-toolchain-ship" ]] && RUN_ARGS+=(-v "$yocto_dir/llvm-arm-toolchain-ship:/pkg/yocto/llvm-arm-toolchain-ship:ro")
     fi
 
     # line bundles, one read-only mount per AU tag (an AU symlink mounts its target)
@@ -667,7 +672,7 @@ cmd_setup() {
             cqm220) prestage_component openwrt "$(openwrt_files)"
                                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-            cqm211)            prestage_component yocto "$BUNDLE_FILES_yocto"; prestage_prebuilts
+            cqm211)            prestage_component yocto "$(pick_files yocto)"
                                for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
             cqm212)            prestage_optional openwrt212
                                [[ "$KPREBUILTS" == 1 ]] && prestage_optional kprebuilts212
