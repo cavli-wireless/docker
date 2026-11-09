@@ -117,5 +117,6 @@ cqm211 (`main`) 3764 s (5591 s without the download cache).
 ## Other directories
 
 - `cqm2xx/`: this tool (`cqm2xx-setup`).
+- `aq62/`: `aq62-setup`, the same kind of container for the AQ62 (SA525M) apps build; replaces `le/22.04` for AQ62.
 - `cqm22x/`: the previous tool, `cqm22x-setup`, for all lines. Unchanged.
 - `sdx/`, `sdx35/`, `c10qm/`, `cqs290/`, `le/`, `common/`: legacy environments, unchanged.
