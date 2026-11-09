@@ -1,0 +1,363 @@
+#!/bin/bash
+# aq62-setup — one container per user to build the AQ62 (SA525M) apps_proc: kernel + Yocto image,
+# no modem / tz / boot. Kept beside cqm2xx/cqm2xx-setup, same layout. Docs: README.md.
+#   wget https://raw.githubusercontent.com/cavli-wireless/docker/main/aq62/aq62-setup && chmod +x aq62-setup
+#   ./aq62-setup setup -m /path/to/src
+set -euo pipefail
+
+CQM_ROOT="${AQ62_ROOT:-$HOME/aq62}"
+STATE_DIR="$CQM_ROOT/v1"
+STATE_FILE="$STATE_DIR/state.json"
+CONTAINER_BASE=aq62
+
+# Appended as _<suffix> to the container name; combine with a separate AQ62_ROOT for an isolated instance.
+CQM_NAME_SUFFIX="${AQ62_NAME_SUFFIX:-}"
+
+# Local/offline bundle source: <dir>/<component>/ instead of the release, same files and checksums.
+BUNDLE_DIR="${AQ62_BUNDLE_DIR:-}"
+
+# Image = the public cqm2xx base + the AQ62 Yocto/TelAF host tools (AQ62_DOCKERFILE below), built locally.
+BASE_IMG="${AQ62_BASE_IMAGE:-ghcr.io/cavli-wireless-public/cqm22x-buildenv:1.1.6}"
+IMAGE_VERSION="1.0.2"
+DOCKER_IMG="${AQ62_IMAGE:-aq62-buildenv:$IMAGE_VERSION}"
+BUNDLE_VERSION=1.1.0
+
+# Kernel prebuilts (clang r450784e, build-tools, kernel-build-tools, ndk-r23): the cqm220 kp220 pack, the same
+# clang both AQ62 lines pin (msm-kernel/build.config.constants). "name sha256 source", mounted at /pkg/prebuilts.
+BUNDLE_FILES_prebuilts='
+cqm22x-kp220-1.1.0.tar.zst 48675a220c6eac5fd7e63d96a2010e70468c0d824a60fa1ebb71c25041827cca gh:bundles-1.1.0
+'
+BUNDLES_REPO="${AQ62_BUNDLES_REPO:-cavli-wireless-public/cqm2xx-bundles}"
+
+# Lines this container builds: "line qualcomm-drop manifest-branch (or repo branches)".
+LINES='
+es1   SA525M.LE.1.0  aq62_manifest release/aq62_es1_bringup_release
+es2   SA525M.LE.1.0  aq62_manifest release/aq62_es2_bringup_release
+es3   SA525M.LE.1.0  aq62_manifest release/aq62_es3_bringup_release
+main  SA525M.LE.1.0  aq62_manifest main
+le31  SA525M.LE.3.1  aq62_chipcode+aq62_apps_proc aq62_le_3.1_bringup, cqm22x-build-scripts sa525m-le3-1
+'
+
+log()  { printf '\033[36m[aq62-setup]\033[0m %s\n' "$*"; }
+die()  { printf '\033[31m[aq62-setup] error:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+aq62-setup — set up and manage the AQ62 apps build container (kernel + Yocto, no modem/tz/boot).
+
+  setup                   build the image, stage the kernel prebuilts, (re)create the container.
+  update                  same, keeping the recorded mounts (take a newer script first).
+  status                  show the image, staged bundles, lines and the container's mounts.
+  version                 print the image and bundle versions.
+
+  -m <dir>                bind-mount a host dir into the container (repeatable).
+  --name <x>              use a separate, named container instead of the default.
+  --bundle-dir <dir>      take bundles from <dir>/<component>/ instead of downloading them.
+  --no-ssh / --ssh        don't / do mount ~/.ssh (read-only, on by default; repo sync from GitHub needs it).
+  -h, --help              this text.
+
+Everything lives under \$AQ62_ROOT (default ~/aq62); container name: aq62_<user>.
+
+Examples:
+  ./aq62-setup setup -m /path/to/src        # first install
+  ./aq62-setup update                       # bring up to date
+EOF
+}
+
+state_get() { jq -r "$1 // empty" "$STATE_FILE"; }
+
+# A name in `docker ps -a` that this script did not record is refused before any `docker run`/`rm`.
+container_owned() {
+    jq -e --arg n "$1" '(.containers // []) | index($n) != null' "$STATE_FILE" >/dev/null
+}
+record_container() {
+    local tmp; tmp="$(mktemp)"
+    jq --arg n "$1" '.containers = ((.containers // []) + [$n] | unique)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+guard_container() {
+    if docker ps -a --format '{{.Names}}' | grep -qxF "$1" && ! container_owned "$1"; then
+        die "'$1' already exists and this script did not create it — refusing to touch it. Re-run with --name <suffix> and/or a separate AQ62_ROOT."
+    fi
+}
+state_merge() {
+    local tmp; tmp="$(mktemp)"
+    local mounts_json; mounts_json="$(printf '%s\n' "${EXTRA_MOUNTS[@]:-}" | sed '/^$/d' | jq -R . | jq -s .)"
+    jq --arg img "$DOCKER_IMG" --arg base "$BASE_IMG" --arg bv "$BUNDLE_VERSION" --arg bd "$BUNDLE_DIR" \
+       --arg cname "$CONTAINER_NAME" --argjson ssh "$([[ "$SSH_ENABLED" == 1 ]] && echo true || echo false)" \
+       --argjson mounts "$mounts_json" \
+       '.image=$img | .base_image=$base | .bundle_version=$bv | .bundle_dir=$bd | .container=$cname | .ssh=$ssh |
+        .mounts=(((.mounts // []) + $mounts) | unique)' \
+       "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+# GitHub release asset; spec = gh:<tag>[:<n parts>] (parts name.part00..), joined in order. Resumes.
+release_fetch() {
+    local tag="${2#gh:}" n=1 i part out="$3"
+    [[ "$tag" == *:* ]] && { n="${tag#*:}"; tag="${tag%%:*}"; }
+    local base="https://github.com/$BUNDLES_REPO/releases/download/$tag"
+    if (( n == 1 )); then
+        curl -fL --retry 5 --retry-delay 10 -C - -o "$out.part" "$base/$1" || die "download of $1 failed — re-run to resume"
+        mv -f "$out.part" "$out"; return 0
+    fi
+    : > "$out.join"
+    for ((i = 0; i < n; i++)); do
+        part="$out.p$(printf '%02d' "$i")"
+        [[ -f "$part" ]] || { curl -fL --retry 5 --retry-delay 10 -C - -o "$part.part" "$base/$1.part$(printf '%02d' "$i")" \
+            || die "download of $1.part$(printf '%02d' "$i") failed — re-run to resume"; mv -f "$part.part" "$part"; }
+        cat "$part" >> "$out.join"
+    done
+    mv -f "$out.join" "$out"; rm -f "$out".p[0-9][0-9]
+}
+
+prestage_component() {
+    # $1 = component, $2 = "name sha256 source" list. From --bundle-dir/<component> or the release;
+    # sha256-checked, unpacked into $AQ62_ROOT/<component>/<version>, marked .complete.
+    local component="$1" files="$2" dest="$CQM_ROOT/$1/$BUNDLE_VERSION" stage src_dir=""
+    local pins; pins="$(awk 'NF {print $2}' <<<"$files")"
+    [[ -f "$dest/.complete" && "$(cat "$dest/.pins" 2>/dev/null)" == "$pins" ]] \
+        && { log "$component $BUNDLE_VERSION already staged at $dest"; return 0; }
+    rm -f "$dest/.complete"
+    if [[ -n "$BUNDLE_DIR" ]]; then
+        [[ -d "$BUNDLE_DIR/$component" ]] || die "--bundle-dir: $BUNDLE_DIR/$component not found (--bundle-dir '' goes back to the release)"
+        src_dir="$BUNDLE_DIR/$component"
+    fi
+    stage="$CQM_ROOT/cache/$component-$BUNDLE_VERSION"
+    mkdir -p "$dest" "$stage"
+    local name sha id f
+    while read -r name sha id; do
+        [[ -n "$name" ]] || continue
+        f="$stage/$name"
+        if [[ -n "$src_dir" ]]; then
+            f="$src_dir/$name"; log "$component: using $f"
+        elif [[ ! -f "$f" ]]; then
+            log "$component: fetching $name"; release_fetch "$name" "$id" "$f"
+        fi
+        log "$component: checking $name"
+        echo "$sha  $f" | sha256sum -c --quiet - \
+            || { [[ -n "$src_dir" ]] || rm -f "$f"; die "$component/$name checksum mismatch"; }
+        tar --use-compress-program="zstd -d -T0 --long=31" -xf "$f" -C "$dest"
+    done <<<"$files"
+    printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
+    printf '%s\n' "$pins" > "$dest/.pins"
+    touch "$dest/.complete"
+    rm -rf "$stage"
+    log "$component ready ($(du -sh "$dest" | cut -f1)) at $dest"
+}
+
+# Host tools the SA525M Yocto (kirkstone) + TelAF build needs on top of the cqm2xx base image.
+AQ62_DOCKERFILE='
+ARG BASE
+FROM ${BASE}
+ARG BASE
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+# checkpolicy (checkmodule) semodule-utils: TelAF SELinux modules; lz4 (lz4c): bitbake HOSTTOOLS;
+# libxml2-utils (xmllint): set_bb_env.sh; mtd-utils: ubinize; openjdk-8: TelAF CommonAPI generator (Java 8).
+# tar 1.34+dfsg-1build3: the jammy-updates tar extracts with openat2(), which kirkstone pseudo does not wrap.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        checkpolicy semodule-utils lz4 libxml2-utils mtd-utils openjdk-8-jre-headless \
+    && apt-get install -y --allow-downgrades --no-install-recommends tar=1.34+dfsg-1build3 \
+    && apt-mark hold tar \
+    && cd /tmp && apt-get download libpython2.7-stdlib && dpkg-deb -x libpython2.7-stdlib_*.deb x \
+    && install -m 0644 x/usr/lib/python2.7/lib-dynload/bz2.x86_64-linux-gnu.so /usr/lib/python2.7/lib-dynload/bz2.so \
+    && rm -rf /tmp/x /tmp/*.deb && apt-get clean && rm -rf /var/lib/apt/lists/*
+# LE.3.1 premirrors git://git.codelinaro.org (port 9418, often blocked: each fetch waits for a timeout).
+RUN git config --system url."https://git.codelinaro.org/".insteadOf "git://git.codelinaro.org/"
+# TelAF ifgen needs Jinja2 2.x (jinja2.ext.with_): LE.3.1 runs it with /usr/bin/python3 (3.8), LE.1.0 with
+# python2.7 (no pip there: setuptools 44.1.1 for pkg_resources, the pure-python packages copied in). update-util needs python2 bz2.
+RUN /usr/bin/python3 -m pip install --no-cache-dir jinja2==2.11.3 markupsafe==2.0.1 \
+    && cd /tmp && P=https://files.pythonhosted.org/packages \
+    && curl -fsSLo j.tgz $P/4f/e7/65300e6b32e69768ded990494809106f87da1d436418d5f1367ed3966fd7/Jinja2-2.11.3.tar.gz \
+    && curl -fsSLo m.tgz $P/b9/2e/64db92e53b86efccfaea71321f597fa2e1b2bd3853d8ce658568f7a13094/MarkupSafe-1.1.1.tar.gz \
+    && curl -fsSLo s.zip $P/b2/40/4e00501c204b457f10fe410da0c97537214b2265247bc9a5bc6edd55b9e4/setuptools-44.1.1.zip \
+    && printf "%s\n" "a6d58433de0ae800347cab1fa3043cebbabe8baa9d29e668f1c768cb87a333c6  j.tgz" \
+                     "29872e92839765e546828bb7754a68c418d927cd064fd4708fab9fe9c8bb116b  m.tgz" \
+                     "c67aa55db532a0dadc4d2e20ba9961cbd3ccc84d544e9029699822542b5a476b  s.zip" | sha256sum -c --quiet - \
+    && tar -xzf j.tgz && tar -xzf m.tgz && unzip -q s.zip \
+    && (cd setuptools-44.1.1 && python2.7 setup.py -q install >/dev/null) \
+    && cp -r Jinja2-2.11.3/src/jinja2 MarkupSafe-1.1.1/src/markupsafe /usr/lib/python2.7/site-packages/ \
+    && python2.7 -m compileall -q -x async /usr/lib/python2.7/site-packages/jinja2 /usr/lib/python2.7/site-packages/markupsafe \
+    && rm -rf /tmp/j.tgz /tmp/m.tgz /tmp/s.zip /tmp/Jinja2-2.11.3 /tmp/MarkupSafe-1.1.1 /tmp/setuptools-44.1.1 \
+    && python2 -c "import bz2" && /usr/bin/python3 -c "import jinja2.ext; jinja2.ext.with_" \
+    && python2.7 -c "import jinja2.ext, markupsafe, pkg_resources; jinja2.ext.with_"
+LABEL com.cavli.aq62.base=${BASE}
+'
+
+build_image() {
+    if [[ -n "${AQ62_IMAGE:-}" ]]; then
+        log "pulling $DOCKER_IMG (AQ62_IMAGE)"; docker pull "$DOCKER_IMG" >/dev/null; return 0
+    fi
+    log "pulling $BASE_IMG"
+    docker pull "$BASE_IMG" >/dev/null
+    log "building $DOCKER_IMG"
+    docker build -q --build-arg "BASE=$BASE_IMG" -t "$DOCKER_IMG" - <<<"$AQ62_DOCKERFILE" >/dev/null \
+        || die "image build failed (run again; apt mirrors fail at times)"
+}
+
+build_run_args() {
+    RUN_ARGS=(--name "$CONTAINER_NAME" --hostname "$CONTAINER_BASE" -dit
+              -e "TERM=xterm-256color"
+              -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)"
+              -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)"
+              -e "CQM_HOME=$HOME"
+              -e "CQM_PRODUCTS=aq62"
+              --add-host "${CONTAINER_BASE}:127.0.0.1"
+              -v /etc/localtime:/etc/localtime:ro)
+    local groups; groups="$(id -G | tr ' ' '\n' | { grep -vx "$(id -g)" || true; } | paste -sd, -)"
+    [[ -n "$groups" ]] && RUN_ARGS+=(-e "CQM_GROUPS=$groups")
+
+    # home: $AQ62_ROOT/home at the host's own $HOME path, never the real one.
+    mkdir -p "$CQM_ROOT/home"
+    RUN_ARGS+=(-v "$CQM_ROOT/home:$HOME")
+    [[ "$SSH_ENABLED" == 1 && -d "$HOME/.ssh" ]] && RUN_ARGS+=(-v "$HOME/.ssh:$HOME/.ssh:ro")
+
+    mkdir -p "$CQM_ROOT/workspace"
+    RUN_ARGS+=(-v "$CQM_ROOT/workspace:$CQM_ROOT/workspace")
+    local m
+    for m in "${ALL_MOUNTS[@]}"; do
+        [[ "$m" == "$CQM_ROOT/workspace" ]] && continue
+        RUN_ARGS+=(-v "$m:$m")
+    done
+
+    # build.approc.sh / build.kernel.sh link kernel_platform/prebuilts to /pkg/prebuilts.
+    RUN_ARGS+=(-v "$CQM_ROOT/prebuilts/$BUNDLE_VERSION/prebuilts:/pkg/prebuilts:ro"
+               -v "$CQM_ROOT/prebuilts/$BUNDLE_VERSION/BUNDLE_VERSION:/pkg/BUNDLE_VERSION:ro")
+    # Yocto DL_DIR shared by every tree (link <tree>/apps_proc/downloads to it), writable.
+    mkdir -p "$CQM_ROOT/downloads"
+    RUN_ARGS+=(-v "$CQM_ROOT/downloads:/pkg/yocto/downloads")
+}
+
+# Sources whose recipe URL is rate-limited (CodeLinaro 429) and no Yocto mirror has: "DL_DIR name sha256 url".
+# wireless-tools patches: meta-qti-wlan bbappend fetches them from a CodeLinaro poky copy; same files on yoctoproject.
+SEED_FILES='
+remove.ldconfig.call.patch 00e8fa61e84813bf22eb85ecc50d5a5d5048e405bdd28600986b04088f6087e3 https://git.yoctoproject.org/poky/plain/meta/recipes-connectivity/wireless-tools/wireless-tools/remove.ldconfig.call.patch?h=rocko
+man.patch 26f6ec100566a1ff46accc70dc3473dbf316706554c12fdc2447651456110ed0 https://git.yoctoproject.org/poky/plain/meta/recipes-connectivity/wireless-tools/wireless-tools/man.patch?h=rocko
+avoid_strip.patch bf8edf61ee556807e2333c74071e00a145743e26d089e25d0276e04e4341c2a6 https://git.yoctoproject.org/poky/plain/meta/recipes-connectivity/wireless-tools/wireless-tools/avoid_strip.patch?h=rocko
+ldflags.patch ccd8dafb90dc6bd3f32e9523a40683f622411fe5d396070938d2c8d998eb257c https://git.yoctoproject.org/poky/plain/meta/recipes-connectivity/wireless-tools/wireless-tools/ldflags.patch?h=rocko
+'
+
+# Upstream SELinux renamed master to main; meta-selinux pins its revs on branch=master and LE.1.0 has no CLO
+# yocto-mirrors premirror. Seed DL_DIR with the CLO mirror clone (still has master) under the upstream name.
+seed_downloads() {
+    local dl=/pkg/yocto/downloads git_dir=git2/github.com.SELinuxProject.selinux.git
+    docker exec -u "$(id -u):$(id -g)" -e HOME="$HOME" -e SEED_FILES="$SEED_FILES" "$CONTAINER_NAME" bash -c "set -e
+        cd $dl
+        if ! git -C $git_dir rev-parse -q --verify refs/heads/master >/dev/null 2>&1; then
+            mkdir -p git2; rm -rf $git_dir.tmp
+            git clone -q --mirror https://git.codelinaro.org/clo/yocto-mirrors/selinux $git_dir.tmp
+            rm -rf $git_dir; mv $git_dir.tmp $git_dir
+        fi
+        while read -r name sha url; do
+            [ -n \"\$name\" ] && [ ! -f \"\$name.done\" ] || continue
+            curl -fsSL --retry 3 -o \"\$name.tmp\" \"\$url\"
+            echo \"\$sha  \$name.tmp\" | sha256sum -c --quiet -
+            mv \"\$name.tmp\" \"\$name\"; touch \"\$name.done\"
+        done <<<\"\$SEED_FILES\"" \
+        && log "downloads: SELinux mirror and $(awk 'NF' <<<"$SEED_FILES" | wc -l) seed file(s) ready" \
+        || log "warning: could not seed $CQM_ROOT/downloads (the selinux / seeded recipes will fail to fetch)"
+}
+
+cmd_setup() {
+    [[ $# -eq 0 ]] || die "setup takes no product (one container builds every AQ62 line): $*"
+    guard_container "$CONTAINER_NAME"
+    prestage_component prebuilts "$BUNDLE_FILES_prebuilts"
+    [[ -d "$CQM_ROOT/prebuilts/$BUNDLE_VERSION/prebuilts/clang" ]] || die "prebuilts bundle has no prebuilts/clang"
+    build_image
+
+    build_run_args
+    if container_owned "$CONTAINER_NAME"; then
+        docker ps --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME" \
+            && log "recreating $CONTAINER_NAME — anything running inside it is stopped"
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+    docker run "${RUN_ARGS[@]}" "$DOCKER_IMG" tail -f /dev/null >/dev/null
+    record_container "$CONTAINER_NAME"
+
+    # wait for entrypoint.sh's useradd before printing the exec hint.
+    local i; for i in $(seq 1 30); do
+        docker exec "$CONTAINER_NAME" id "$(id -un)" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+
+    seed_downloads
+    state_merge
+    [[ "$SSH_ENABLED" == 1 ]] && { [[ -d "$HOME/.ssh" ]] && log "mounted ~/.ssh read-only" || log "~/.ssh not found — skipped"; } \
+        || log "~/.ssh not mounted (--no-ssh)"
+    log "done. container: $CONTAINER_NAME"
+    log "shell in: docker exec -it --user \$(id -un) -e HOME=\$HOME $CONTAINER_NAME bash -l"
+}
+
+cmd_update() {
+    [[ -n "$(state_get '.container')" ]] || die "nothing installed yet — run 'setup' first"
+    log "updating: image $(state_get '.image') -> $DOCKER_IMG, bundles $(state_get '.bundle_version') -> $BUNDLE_VERSION"
+    cmd_setup
+}
+
+cmd_status() {
+    echo "container: $CONTAINER_NAME"
+    echo "image: $DOCKER_IMG (base $BASE_IMG)"
+    local bd; bd="$(state_get '.bundle_dir')"
+    echo "bundle version: $BUNDLE_VERSION, source: ${bd:-GitHub release $BUNDLES_REPO}"
+    echo "ssh mounted: $(jq -r '.ssh' "$STATE_FILE")"
+    echo "mounts:"
+    echo "  $CQM_ROOT/workspace (default)"
+    jq -r '.mounts[]? | "  \(.)"' "$STATE_FILE"
+    local d="$CQM_ROOT/prebuilts/$BUNDLE_VERSION"
+    if [[ -f "$d/.complete" ]]; then printf 'prebuilts: ok %s at %s\n' "$(du -sh "$d" 2>/dev/null | cut -f1)" "$d"
+    else echo "prebuilts: missing (run setup)"; fi
+    echo "downloads: $(du -sh "$CQM_ROOT/downloads" 2>/dev/null | cut -f1) at $CQM_ROOT/downloads (/pkg/yocto/downloads)"
+    echo "lines (all built in this container):"
+    awk 'NF {line=$1; drop=$2; $1=$2=""; printf "  %-5s %-14s %s\n", line, drop, $0}' <<<"$LINES"
+    if docker ps -a --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME"; then
+        echo "/pkg in $CONTAINER_NAME:"
+        docker inspect "$CONTAINER_NAME" --format '{{range .Mounts}}{{.Destination}}{{if not .RW}} (ro){{end}}{{"\n"}}{{end}}' \
+            | { grep '^/pkg' || true; } | sort | sed 's/^/  /'
+    fi
+}
+
+cmd_version() { echo "aq62-setup: image=$DOCKER_IMG base=$BASE_IMG bundle=$BUNDLE_VERSION"; }
+
+# --- option parsing (options may appear anywhere on the command line) -----
+ALL_MOUNTS=()
+SSH_ENABLED=1
+SSH_SET=""
+BUNDLE_DIR_SET="${AQ62_BUNDLE_DIR:+1}"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in --name|--bundle-dir|-m) [[ $# -ge 2 ]] || die "$1 needs a value";; esac
+    case "$1" in
+        --name)       CQM_NAME_SUFFIX="$2"; shift 2;;
+        --bundle-dir) BUNDLE_DIR="$2"; BUNDLE_DIR_SET=1; shift 2;;
+        -m)           mount_rp="$(realpath -e -- "$2" 2>/dev/null)" || die "-m $2: no such directory"
+                      ALL_MOUNTS+=("$mount_rp"); shift 2;;
+        --no-ssh)     SSH_ENABLED=0; SSH_SET=1; shift;;
+        --ssh)        SSH_ENABLED=1; SSH_SET=1; shift;;
+        *)            ARGS+=("$1"); shift;;
+    esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+CONTAINER_NAME="${CONTAINER_BASE}_$(id -un)${CQM_NAME_SUFFIX:+_$CQM_NAME_SUFFIX}"
+CMD="${1:-}"
+
+case "$CMD" in
+    -h|--help|"") usage; exit 0;;
+    version)      cmd_version; exit 0;;
+esac
+
+for t in docker jq curl tar zstd sha256sum; do command -v "$t" >/dev/null || die "$t not found (README: Before you start)"; done
+mkdir -p "$STATE_DIR"
+[[ -f "$STATE_FILE" ]] || echo '{"containers":[],"mounts":[],"ssh":true}' > "$STATE_FILE"
+[[ -n "$BUNDLE_DIR_SET" ]] || BUNDLE_DIR="$(state_get '.bundle_dir')"
+
+# fold in mounts / ssh flag remembered from a previous run.
+EXTRA_MOUNTS=("${ALL_MOUNTS[@]}")
+while IFS= read -r m; do [[ -n "$m" ]] && ALL_MOUNTS+=("$m"); done < <(jq -r '.mounts[]?' "$STATE_FILE")
+mapfile -t ALL_MOUNTS < <(printf '%s\n' "${ALL_MOUNTS[@]}" | sort -u | sed '/^$/d')
+[[ -z "$SSH_SET" && "$(jq -r '.ssh' "$STATE_FILE")" == "false" ]] && SSH_ENABLED=0
+
+case "$CMD" in
+    setup)   shift; cmd_setup "$@";;
+    update)  shift; cmd_update "$@";;
+    status)  cmd_status;;
+    *) die "unknown command: $CMD (setup|update|status|version)";;
+esac
