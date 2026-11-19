@@ -15,7 +15,7 @@ uid/gid and `$HOME`, so files a build writes come out owned by you.
 |---|---|---|---|
 | 1 | Qualcomm tools (`qcom_common` + `qcom_220` / `qcom_212` / `qcom_211`) | private GitHub release, `--internal` only | boot / tz / modem / meta |
 | 2 | Kernel prebuilt tool (cqm220: `kp220`; cqm212: `kp212`; clang, build-tools, NDK) | public GitHub release `bundles-1.1.0` | kernel + ABL |
-| 3 | OpenWrt prebuilt cache (cqm220: `openwrt-prebuilt-backup`; cqm212: `openwrt212`) | public GitHub release `bundles-1.1.0` | OpenWrt tools and toolchain, not rebuilt |
+| 3 | OpenWrt prebuilt cache (cqm220: `openwrt-prebuilt-backup`; cqm212: `openwrt212`) | public GitHub release (cqm220: `bundles-1.1.1`; cqm212: `bundles-1.1.0`) | OpenWrt tools and toolchain without a rebuild (cqm220: only with `-P`) |
 | 4 | Yocto download cache (cqm211: `yocto-downloads`, about 24 GB) | public GitHub release `bundles-1.1.0` | Yocto sources, no internet fetch |
 
 cqm211 uses items 4 and 1 only (no kernel prebuilt tool, no OpenWrt cache).
@@ -70,22 +70,24 @@ bash build/build.sh -m app                                 # cqm211 app only (ex
 bash build/build.sh -m all                                 # cqm211 full (internal)
 ```
 
-The OpenWrt tools and toolchain come from the cache, not a rebuild. Measured on a fresh sync,
-`-m app`: cqm220 (branch `cavli_kuno_le_1_0`) 990 s, cqm212 (`main`) 1865 s (3437 s without the cache),
-cqm211 (`main`) 3764 s (5591 s without the download cache).
+cqm220 builds the OpenWrt tools and toolchain itself by default, in parallel (`-j$(nproc)`); add `-P`
+to `build.sh` to restore them from the cache instead. cqm212 always uses its cache. Measured on a fresh
+sync, `-m app`: cqm220 about 1600 s by default and 840 s with `-P` (20 cores), cqm212 (`main`) 1865 s
+(3437 s without the cache), cqm211 (`main`) 3764 s (5591 s without the download cache).
 
 - **Path limit (important).** The cache can only be restored into a tree whose `apps_proc/owrt`
-  path is no longer than the path the cache was built at. Past that the cache cannot be restored: the build stops with an error or rebuilds the tools and
-  toolchain from scratch (slow).
+  path is no longer than the path the cache was built at. Past that the cache cannot be restored: cqm220 with `-P`
+  says so and builds the tools and toolchain itself; cqm212 stops with an error or rebuilds them (slow).
   Keep the source root short:
 
   | Line | Cache built at | Source root at most |
   |---|---|---|
-  | cqm220 | 56 characters | 32 (the tree has `/chipcode/apps_proc/owrt` below it) |
+  | cqm220-0 | 100 characters | 76 (the tree has `/chipcode/apps_proc/owrt` below it) |
+  | cqm220-3 | 100 characters | 59 (the tree has `/chipcode/OWRT.PRODUCT.2.1/apps_proc/owrt` below it) |
   | cqm212 | 91 characters | 56 (the tree has `/chipcode/Kobuk_apps/apps_proc/owrt` below it) |
 
   cqm211 has no cache path limit, but a source root of about 100 characters or more breaks the Yocto build.
-  Example: `/mnt/SSD_2TB/cqm220` is fine; `/mnt/SSD_M2/cav/workspaces/cqm220` (33) is too long.
+  Example for cqm212: `/mnt/SSD_2TB/cqm212` is fine. A cqm220 tree over the limit still builds, without the cache.
 - cqm212 needs the line's cache support (`cqm212-apps-proc`, branch `cavli_kobuk_le_1_1`,
   "restore tools/toolchain/hostpkg from a prebuilt cache"). Without it the build still works but
   rebuilds the tools and toolchain.
@@ -98,7 +100,7 @@ cqm211 (`main`) 3764 s (5591 s without the download cache).
 - `--bundle-dir <dir>` (or `CQM_BUNDLE_DIR`) reads bundles from `<dir>/<component>/` instead of downloading;
   the directory is remembered for later runs and `update`. A component without a directory is
   still downloaded (qcom would ask for the GitHub login). Components and files:
-  - `openwrt` (cqm220): `cqm22x-kp220-1.1.0.tar.zst`, `cqm22x-openwrt-prebuilt-backup-1.1.0.tar.zst`
+  - `openwrt` (cqm220): `cqm22x-kp220-1.1.0.tar.zst`, `cqm22x-openwrt-prebuilt-backup-1.1.1.tar.zst`
   - `kprebuilts212`: `cqm22x-kp212-1.1.0.tar.zst`; `openwrt212`: `cqm22x-openwrt212-1.1.0.tar.zst`
   - `yocto` (cqm211): `cqm22x-yocto-downloads-1.1.0.tar.zst`
   - `--internal`: `qcom_common`, `qcom_220`, `qcom_212`, `qcom_211`, each `cqm22x-<part>-1.1.0.tar.zst` (joined, not `.partNN`)

@@ -31,7 +31,7 @@ BUNDLE_VERSION="${CQM_BUNDLE_VERSION:-1.1.0}"
 # openwrt-prebuilt-backup = OpenWrt prebuilt tools/toolchain cache for Kuno.LE.1.0.
 BUNDLE_FILES_openwrt='
 cqm22x-kp220-1.1.0.tar.zst 48675a220c6eac5fd7e63d96a2010e70468c0d824a60fa1ebb71c25041827cca gh:bundles-1.1.0
-cqm22x-openwrt-prebuilt-backup-1.1.0.tar.zst 4a8556989f6c26718eb751526d3843d8d14ef35393e5b055a27053d347d223a3 gh:bundles-1.1.0:2
+cqm22x-openwrt-prebuilt-backup-1.1.1.tar.zst 8f0fb90b6ee32a351d3d2a171769f8c180475d6afb1f482fc5ebc5b5f3757806 gh:bundles-1.1.1:2
 '
 BUNDLE_FILES_openwrt_drive='
 prebuilts.tar.zst ed17b3427b6dc08535a346503254a5ab34fcf55e8d6e9aa62552d4fd43d6d209 1vmEFhcEq_9BkhZS1itmiWZl5m9r7FdUW
