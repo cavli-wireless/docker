@@ -78,7 +78,7 @@ if [[ -d "$home" ]]; then
         cat > "$notice" <<'EOF'
 customer install: Qualcomm tools are not installed. openwrt/yocto app builds
 work; building modem/tz/boot needs the full install (an internal user runs
-cqm22x-setup setup --full).
+cavli-setup setup --internal).
 EOF
         chown "$CQM_UID:$CQM_GID" "$notice" 2>/dev/null || true
         grep -qF ".cqm-customer-notice" "$home/.bash_profile" 2>/dev/null \

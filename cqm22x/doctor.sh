@@ -193,7 +193,7 @@ if [[ "$WANT_QCOM" == no ]]; then
     [[ "$PRODUCT" == buildroot ]] || note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
 fi
 if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == yes ]]; then
-    note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cqm22x-setup setup --full"
+    note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cavli-setup setup --internal"
 fi
 if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == no ]]; then
 for p in /pkg/qct/software/HEXAGON_Tools /pkg/qct/software/llvm/release/arm \
