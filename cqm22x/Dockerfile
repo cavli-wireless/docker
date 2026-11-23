@@ -246,6 +246,44 @@ ENV NANOPB_DIR=/opt/nanopb
 RUN ln -sf /usr/bin/bash /usr/bin/sh && ln -sf /usr/bin/make /usr/bin/gmake
 
 # ---------------------------------------------------------------------------
+# 7b. AQ62 (SA525M, Yocto kirkstone + TelAF) host tools.
+#     checkpolicy semodule-utils: TelAF SELinux modules; lz4 (lz4c): bitbake
+#     HOSTTOOLS; libxml2-utils (xmllint): set_bb_env.sh; mtd-utils: ubinize;
+#     openjdk-8: TelAF CommonAPI generator.
+#     tar is held at 1.34+dfsg-1build3: the jammy-updates tar extracts with
+#     openat2(), which kirkstone pseudo does not wrap (do_package breaks).
+#     python2 bz2: update-util. LE.3.1 premirrors git://git.codelinaro.org
+#     (port 9418, often blocked), so fetch it over https.
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        checkpolicy semodule-utils lz4 libxml2-utils mtd-utils openjdk-8-jre-headless \
+    && apt-get install -y --allow-downgrades --no-install-recommends tar=1.34+dfsg-1build3 \
+    && apt-mark hold tar \
+    && cd /tmp && apt-get download libpython2.7-stdlib && dpkg-deb -x libpython2.7-stdlib_*.deb x \
+    && install -m 0644 x/usr/lib/python2.7/lib-dynload/bz2.x86_64-linux-gnu.so /usr/lib/python2.7/lib-dynload/bz2.so \
+    && rm -rf /tmp/x /tmp/*.deb && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN git config --system url."https://git.codelinaro.org/".insteadOf "git://git.codelinaro.org/"
+
+# TelAF ifgen needs Jinja2 2.x (jinja2.ext.with_): LE.3.1 runs it with python3
+# (3.8), LE.1.0 with python2.7 (no pip there: setuptools 44.1.1 for
+# pkg_resources, the pure-python packages copied in). Downloads pinned by sha256.
+RUN /usr/bin/python3 -m pip install --no-cache-dir jinja2==2.11.3 markupsafe==2.0.1 \
+    && cd /tmp && P=https://files.pythonhosted.org/packages \
+    && curl -fsSLo j.tgz $P/4f/e7/65300e6b32e69768ded990494809106f87da1d436418d5f1367ed3966fd7/Jinja2-2.11.3.tar.gz \
+    && curl -fsSLo m.tgz $P/b9/2e/64db92e53b86efccfaea71321f597fa2e1b2bd3853d8ce658568f7a13094/MarkupSafe-1.1.1.tar.gz \
+    && curl -fsSLo s.zip $P/b2/40/4e00501c204b457f10fe410da0c97537214b2265247bc9a5bc6edd55b9e4/setuptools-44.1.1.zip \
+    && printf "%s\n" "a6d58433de0ae800347cab1fa3043cebbabe8baa9d29e668f1c768cb87a333c6  j.tgz" \
+                     "29872e92839765e546828bb7754a68c418d927cd064fd4708fab9fe9c8bb116b  m.tgz" \
+                     "c67aa55db532a0dadc4d2e20ba9961cbd3ccc84d544e9029699822542b5a476b  s.zip" | sha256sum -c --quiet - \
+    && tar -xzf j.tgz && tar -xzf m.tgz && unzip -q s.zip \
+    && (cd setuptools-44.1.1 && python2.7 setup.py -q install >/dev/null) \
+    && cp -r Jinja2-2.11.3/src/jinja2 MarkupSafe-1.1.1/src/markupsafe /usr/lib/python2.7/site-packages/ \
+    && python2.7 -m compileall -q -x async /usr/lib/python2.7/site-packages/jinja2 /usr/lib/python2.7/site-packages/markupsafe \
+    && rm -rf /tmp/j.tgz /tmp/m.tgz /tmp/s.zip /tmp/Jinja2-2.11.3 /tmp/MarkupSafe-1.1.1 /tmp/setuptools-44.1.1 \
+    && python2 -c "import bz2" && /usr/bin/python3 -c "import jinja2.ext; jinja2.ext.with_" \
+    && python2.7 -c "import jinja2.ext, markupsafe, pkg_resources; jinja2.ext.with_"
+
+# ---------------------------------------------------------------------------
 # 8. Mount points and cache layout.
 #    /pkg/kernel/prebuilts used to be a full 12 GB byte-for-byte copy of
 #    /pkg/prebuilts sitting in the container's writable layer. It is a symlink
