@@ -205,7 +205,7 @@ record_container() {
 }
 guard_container() {
     local name="$1"
-    if docker ps -a --format '{{.Names}}' | grep -qx "$name" && ! container_owned "$name"; then
+    if docker ps -a --format '{{.Names}}' | grep -qxF "$name" && ! container_owned "$name"; then
         die "'$name' already exists and this script did not create it — refusing to touch it. Re-run with --name <suffix> (or CAVLI_NAME_SUFFIX) and/or a separate CAVLI_ROOT to use an isolated container."
     fi
 }
@@ -744,9 +744,14 @@ seed_downloads() {
     docker exec -u "$(id -u):$(id -g)" -e HOME="$HOME" -e SEED_FILES="$SEED_FILES" "$CONTAINER_NAME" bash -c "set -e
         cd $dl
         if ! git -C $git_dir rev-parse -q --verify refs/heads/master >/dev/null 2>&1; then
-            mkdir -p git2; rm -rf $git_dir.tmp
-            git clone -q --mirror https://git.codelinaro.org/clo/yocto-mirrors/selinux $git_dir.tmp
-            rm -rf $git_dir; mv $git_dir.tmp $git_dir
+            mkdir -p git2
+            if [ -d $git_dir ]; then
+                git -C $git_dir fetch -q https://git.codelinaro.org/clo/yocto-mirrors/selinux +refs/heads/master:refs/heads/master
+            else
+                rm -rf $git_dir.tmp
+                git clone -q --mirror https://git.codelinaro.org/clo/yocto-mirrors/selinux $git_dir.tmp
+                mv $git_dir.tmp $git_dir
+            fi
         fi
         while read -r name sha url; do
             [ -n \"\$name\" ] && [ ! -f \"\$name.done\" ] || continue
@@ -797,7 +802,7 @@ cmd_setup() {
 
     build_run_args "$all_products"
     if container_owned "$CONTAINER_NAME"; then
-        docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" \
+        docker ps --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME" \
             && log "recreating $CONTAINER_NAME — anything running inside it is stopped"
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
@@ -894,7 +899,7 @@ cmd_status() {
         echo "aq62 lines (all built in this container):"
         awk 'NF {line=$1; drop=$2; $1=$2=""; printf "  %-5s %-14s %s\n", line, drop, $0}' <<<"$AQ62_LINES"
     fi
-    if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    if docker ps -a --format '{{.Names}}' | grep -qxF "$CONTAINER_NAME"; then
         echo "/pkg in $CONTAINER_NAME:"
         docker inspect "$CONTAINER_NAME" --format '{{range .Mounts}}{{.Destination}}{{if not .RW}} (ro){{end}}{{"\n"}}{{end}}' \
             | grep '^/pkg' | sort | sed 's/^/  /'
