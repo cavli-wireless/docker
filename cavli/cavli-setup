@@ -283,13 +283,13 @@ release_fetch() {
 }
 
 # --- fast download ----------------------------------------------------------
-# One GitHub connection gives ~35 MB/s; 4+ together fill a 1 Gb/s link. So every GitHub asset is cut into ranges of
+# One GitHub connection varies a lot (measured 2 to 84 MB/s per 256 MB range). So every GitHub asset is cut into ranges of
 # CAVLI_DL_CHUNK_MB, fetched by a shared pool of CAVLI_DL_JOBS connections (all items together) and read back in order
 # as ONE stream: sha256 | zstd -d | tar, extracting while the rest still downloads (no join copy, no second sha pass).
 # Chunks stay in the cache until the item is verified, so a re-run resumes. CAVLI_DL_JOBS=0: old one-file-at-a-time path.
 # Backlog limits: CAVLI_UNPACK_JOBS items unpack at a time (0 = no limit); each file downloads at most CAVLI_DL_AHEAD
 # ranges ahead of its tar, also while it waits for its turn.
-DL_JOBS="${CAVLI_DL_JOBS:-8}"; DL_CHUNK_MB="${CAVLI_DL_CHUNK_MB:-256}"
+DL_JOBS="${CAVLI_DL_JOBS:-12}"; DL_CHUNK_MB="${CAVLI_DL_CHUNK_MB:-256}"
 [[ "$DL_JOBS" =~ ^[0-9]+$ && "$DL_CHUNK_MB" =~ ^[1-9][0-9]*$ ]] || { echo "[cavli-setup] error: CAVLI_DL_JOBS / CAVLI_DL_CHUNK_MB must be numbers" >&2; exit 1; }
 DL_CHUNK=$((DL_CHUNK_MB * 1048576))
 UNPACK_JOBS="${CAVLI_UNPACK_JOBS:-2}"; DL_AHEAD="${CAVLI_DL_AHEAD:-$((DL_JOBS * 2))}"

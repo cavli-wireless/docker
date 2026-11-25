@@ -38,7 +38,7 @@ stored under `$CAVLI_ROOT/home` and reused).
 
 ## Before you start
 
-- Linux host with Docker (your user can run `docker`), plus `jq`, `curl`, `tar`, `zstd`, `sha256sum`.
+- Linux host with Docker (your user can run `docker`), plus `jq`, `curl`, `tar`, `zstd`, `sha256sum`, `flock`.
 - Network access to `github.com` and `ghcr.io` (aq62 seeding also `git.codelinaro.org`, `git.yoctoproject.org`);
   free disk for the bundles (several GB per product).
 - Everything is kept under `$CAVLI_ROOT` (default `~/cavli`). The container's `$HOME` is `$CAVLI_ROOT/home`, so your
@@ -72,28 +72,52 @@ the script you have: download the newer script first. `--name <x>` makes a separ
 ## Download speed
 
 `setup` fetches everything at once: all products' bundles and the image pull run together, each GitHub file is cut
-into 256 MB ranges taken by a pool of 8 connections (one connection gives about 35 MB/s, 4 or more fill a 1 Gb/s link),
+into 256 MB ranges taken by a pool of 12 connections,
 and each bundle is read back in order as one stream `sha256 | zstd -d | tar`, so it unpacks while it downloads. The
 sha256 is checked on that same stream; a mismatch removes the unpacked files and nothing is marked complete. Ranges stay
 in the cache until the bundle is verified, so an interrupted `setup` resumes: it unpacks again from the start, without
 downloading the kept ranges again. Each bundle prints downloaded %, unpacking %, MB/s and elapsed time every 10 s
 (100% downloaded is not done), and `setup` ends with a timing table.
 
-To keep downloads from running far ahead of a slow disk, 2 bundle files are fetched and unpacked at a time (cqm211's
-Yocto cache first), each at most 16 ranges ahead of `tar`. The qcom container has its own limit of 2.
+All bundle files download at once. 2 of them unpack at a time (cqm211's Yocto cache first); the others download
+ahead while they wait. No file gets more than 24 ranges ahead of its `tar`, which keeps downloads from running far
+ahead of a slow disk. `--internal` downloads the Qualcomm parts in a second container with its own pool and its own 2
+unpack slots, so it can use twice the connections.
 
-- `CAVLI_DL_JOBS=<n>` connections (default 8), `CAVLI_DL_CHUNK_MB=<n>` range size (default 256).
+A connection that stays under 2 MB/s for 15 s (or does not connect in 20 s) is dropped and its range resumes where
+it stopped. An attempt that moved at least 1 MB does not count against the 6 tries, so a slow link still finishes.
+Each finished range prints one line with its size, seconds, MB/s and tries.
+
+Measured on one host (1 Gb/s link, NVMe, image already local, few runs, so expect other numbers elsewhere):
+
+- external cqm220+cqm212 from empty: 8 connections 84-104 s (3 runs), 12 connections 80-82 s (2 runs), 16
+  connections 73-83 s (3 runs). 12 and 16 were level; the default is 12.
+- external, all four products, 12 connections: 5m51s, 34 GB received at 97 MB/s average (1 run).
+- one connection's rate varies: full ranges ran at 2 to 84 MB/s, many at only 3 to 4 MB/s. That is above the 2 MB/s
+  drop limit, and with in-order unpacking one slow range can hold up the end of a file.
+- `--internal` was not timed with 12 connections (24 with the Qualcomm container).
+
+Only one `setup` runs on a `CAVLI_ROOT` (and cache dir) at a time; a second one waits 20 s, then stops. After a killed
+run, the lock stays until its last process has ended.
+
+- `CAVLI_DL_JOBS=<n>` connections (default 12), `CAVLI_DL_CHUNK_MB=<n>` range size (default 256).
   `CAVLI_DL_JOBS=0` is the old way, one file at a time.
 - `CAVLI_UNPACK_JOBS=<n>` files at a time (default 2, 0 = no limit), `CAVLI_DL_AHEAD=<n>` ranges ahead of `tar`
   (default twice `CAVLI_DL_JOBS`).
+- `CAVLI_DL_MIN_BPS=<bytes/s>` the speed under which a connection is dropped (default 2000000, 0 = never).
 - `CAVLI_CACHE_DIR=<absolute dir>` keeps the downloaded ranges there, for example on another disk (default
   `$CAVLI_ROOT/cache`). Unpacking stays under `CAVLI_ROOT`. Give each `CAVLI_ROOT` its own cache dir.
-- `CAVLI_DL_KEEP=0` deletes each range once `tar` has read it, so the cache holds a few GB at most; a re-run after a
-  failure then downloads the deleted ranges again.
-- No extra tool: only `curl`, `tar`, `zstd`, `sha256sum`. With the ranges kept (default), the cache needs about the
-  bundle's size in free disk, on top of the unpacked size, until it is verified.
-- For `--internal` without a terminal (CI), `GH_TOKEN` in the environment is used instead of the device login; it is
-  passed to the throwaway container and never written to disk.
+- `CAVLI_DL_KEEP=0` deletes each range once `tar` has read it; a re-run after a failure then downloads the deleted
+  ranges again. Each file can still hold `CAVLI_DL_AHEAD` ranges (6 GB at the defaults) and all files download at
+  once: at the defaults the cache can reach about 13 GB external and 23 GB with `--internal`.
+- With the ranges kept (default), the cache needs about the bundle's size in free disk, on top of the unpacked size,
+  until it is verified. All four products took about 75 GB of writes external and 143 GB internal. `setup` checks the free
+  space before it downloads (`CAVLI_SKIP_SPACE_CHECK=1` skips the check).
+- For `--internal` without a terminal (CI), `GH_TOKEN` in the environment is used instead of the device login. The
+  script keeps its own copy of the token only in the container's RAM, but Docker stores the variable in the container's
+  settings: while the throwaway container exists, anyone who can use Docker on the host can read it with
+  `docker inspect`. Use a narrow token: a fine-grained one with read-only "Contents" access to the Qualcomm bundles
+  repository only, and a short expiry (not tested with such a token). Do not pass your everyday `gh` token.
 
 ## Coming from cqm2xx-setup or aq62-setup
 
