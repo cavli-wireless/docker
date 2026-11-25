@@ -282,6 +282,150 @@ release_fetch() {
     mv -f "$out.join" "$out"; rm -f "$out".p[0-9][0-9]
 }
 
+# --- fast download ----------------------------------------------------------
+# One GitHub connection gives ~35 MB/s; 4+ together fill a 1 Gb/s link. So every GitHub asset is cut into ranges of
+# CAVLI_DL_CHUNK_MB, fetched by a shared pool of CAVLI_DL_JOBS connections (all items together) and read back in order
+# as ONE stream: sha256 | zstd -d | tar, extracting while the rest still downloads (no join copy, no second sha pass).
+# Chunks stay in cache/ until the item is verified, so a re-run resumes. CAVLI_DL_JOBS=0: old one-file-at-a-time path.
+DL_JOBS="${CAVLI_DL_JOBS:-8}"; DL_CHUNK_MB="${CAVLI_DL_CHUNK_MB:-256}"
+[[ "$DL_JOBS" =~ ^[0-9]+$ && "$DL_CHUNK_MB" =~ ^[1-9][0-9]*$ ]] || { echo "[cavli-setup] error: CAVLI_DL_JOBS / CAVLI_DL_CHUNK_MB must be numbers" >&2; exit 1; }
+DL_CHUNK=$((DL_CHUNK_MB * 1048576))
+
+fmt_secs() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
+
+# Connection pool: DL_JOBS tokens in a pipe on fd 9, inherited by every background job.
+pool_init() {
+    local f i; f="$(mktemp -u "${TMPDIR:-/tmp}/cavli-pool.XXXXXX")"
+    mkfifo "$f"; exec 9<>"$f"; rm -f "$f"
+    for ((i = 0; i < DL_JOBS; i++)); do printf x >&9; done
+}
+
+# Content-Length of a URL ($2 = optional curl header file); fails when unknown.
+url_size() {
+    local s
+    s="$(curl -fsSIL --retry 3 ${2:+-H "@$2"} "$1" | tr -d '\r' | awk 'tolower($1) == "content-length:" {v = $2} END {print v + 0}')" || return 1
+    (( s > 0 )) && echo "$s"
+}
+
+# One byte range FIRST..LAST of URL into OUT; resumes OUT.part, renamed when complete ($5 = optional curl header file).
+chunk_get() {
+    local url="$1" a="$2" b="$3" out="$4" hdr="${5:-}" want have try
+    want=$((b - a + 1))
+    [[ "$(stat -c%s "$out" 2>/dev/null || echo -1)" == "$want" ]] && return 0
+    rm -f "$out"
+    for try in 1 2 3 4 5 6; do
+        have=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
+        (( have < want )) || break
+        curl -fsSL ${hdr:+-H "@$hdr"} -r "$((a + have))-$b" "$url" >> "$out.part" 2>/dev/null || sleep $((try * 2))
+    done
+    [[ "$(stat -c%s "$out.part" 2>/dev/null || echo 0)" == "$want" ]] || { rm -f "$out.part"; return 1; }
+    mv -f "$out.part" "$out"
+}
+
+# stream_extract LABEL SHA DEST STAGE [HDRFILE] < lines "url size" (in stream order)
+# Fetches the ranges, extracts into DEST while downloading and checks the sha256 of the whole stream.
+# Returns 1: download or unpack failed (STAGE kept, re-run resumes); 2: checksum mismatch (all removed).
+stream_extract() {
+    local label="$1" sha="$2" dst="$3" stage="$4" hdr="${5:-}" url size i=0 j n a b total=0 chunks=() c f dpid rpid spid rc=0 got
+    while read -r url size; do
+        [[ -n "$url" ]] || continue
+        n=$(( (size + DL_CHUNK - 1) / DL_CHUNK ))
+        for ((j = 0; j < n; j++)); do
+            a=$((j * DL_CHUNK)); b=$((a + DL_CHUNK - 1)); (( b < size )) || b=$((size - 1))
+            chunks+=("$url $a $b $stage/$(printf 'c%02d_%04d' "$i" "$j")")
+        done
+        total=$((total + size)); i=$((i + 1))
+    done
+    mkdir -p "$stage" "$dst"; rm -f "$stage"/.fail "$stage"/.stop "$stage"/sha.out; rm -rf "$dst"; mkdir -p "$dst"
+    # dispatcher: chunks in stream order, each waits for a pool token
+    (
+        for c in "${chunks[@]}"; do
+            [[ -e "$stage/.stop" ]] && break
+            read -r -n1 -u 9 _ || break
+            ( # shellcheck disable=SC2086
+              set -- $c; chunk_get "$1" "$2" "$3" "$4" "$hdr" || : > "$stage/.fail"; printf x >&9 ) &
+        done
+        wait
+    ) &
+    dpid=$!
+    # progress every 10 s: bytes on disk, rate over the last interval, elapsed
+    (
+        local_t0=$SECONDS; prev=0; pt=$SECONDS
+        while sleep 10; do
+            got=$(stat -c%s "$stage"/c* 2>/dev/null | awk '{s += $1} END {print s + 0}')
+            log "$label: $((got >> 20)) / $((total >> 20)) MB ($((100 * got / total))%)  $(( (got - prev) / (SECONDS - pt) >> 20 )) MB/s  $(fmt_secs $((SECONDS - local_t0)))"
+            prev=$got; pt=$SECONDS
+        done
+    ) &
+    rpid=$!
+    rm -f "$stage/sha.fifo"; mkfifo "$stage/sha.fifo"
+    ( sha256sum < "$stage/sha.fifo" | cut -d' ' -f1 > "$stage/sha.out" ) &
+    spid=$!
+    {
+        for c in "${chunks[@]}"; do
+            # shellcheck disable=SC2086
+            set -- $c; f="$4"
+            until [[ -f "$f" ]]; do
+                [[ -e "$stage/.fail" ]] && exit 1
+                sleep 0.1
+            done
+            cat "$f"
+        done
+    } | tee "$stage/sha.fifo" | tar --use-compress-program="zstd -d -T0 --long=31" -xf - -C "$dst" || rc=$?
+    kill "$rpid" 2>/dev/null || true; wait "$rpid" 2>/dev/null || true
+    if (( rc != 0 )); then
+        touch "$stage/.stop"; kill "$dpid" "$spid" 2>/dev/null || true; wait "$dpid" "$spid" 2>/dev/null || true
+        rm -rf "$dst"; return 1
+    fi
+    wait "$dpid" "$spid" 2>/dev/null || true
+    got="$(cat "$stage/sha.out" 2>/dev/null || true)"
+    [[ "$got" == "$sha" ]] || { rm -rf "$dst" "$stage"; return 2; }
+    return 0
+}
+
+# Move the content of directory $1 into $2 (merging directories that exist in both).
+merge_into() {
+    local e; mkdir -p "$2"
+    for e in "$1"/* "$1"/.[!.]*; do
+        [[ -e "$e" || -L "$e" ]] || continue
+        if [[ -e "$2/${e##*/}" || -L "$2/${e##*/}" ]]; then cp -alf "$e" "$2/" 2>/dev/null || cp -af "$e" "$2/"; else mv "$e" "$2/"; fi
+    done
+    rm -rf "$1"
+}
+
+# Item timing for the summary: label, seconds, compressed bytes.
+note_time() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$CAVLI_ROOT/cache/.timing"; }
+
+# fetch_extract_gh NAME SHA gh:<tag>[:<n>] DEST STAGE — one public bundle file into DEST (verified, unpacked).
+fetch_extract_gh() {
+    local name="$1" sha="$2" spec="$3" dest="$4" stage="$5" tag n=1 i p base list="" size rc=0 t0=$SECONDS bytes=0
+    tag="${spec#gh:}"; [[ "$tag" == *:* ]] && { n="${tag#*:}"; tag="${tag%%:*}"; }
+    base="https://github.com/$BUNDLES_REPO/releases/download/$tag"
+    mkdir -p "$stage"
+    for ((i = 0; i < n; i++)); do
+        p="$name"; (( n > 1 )) && p="$name.part$(printf '%02d' "$i")"
+        ( url_size "$base/$p" > "$stage/size.$i" ) &
+    done
+    wait
+    for ((i = 0; i < n; i++)); do
+        p="$name"; (( n > 1 )) && p="$name.part$(printf '%02d' "$i")"
+        size="$(cat "$stage/size.$i" 2>/dev/null || true)"
+        [[ "$size" =~ ^[0-9]+$ ]] || die "$name: could not read the size of $p (network, or the asset is missing in $tag)"
+        list+="$base/$p $size"$'\n'; bytes=$((bytes + size))
+    done
+    log "$name: fetching $((bytes >> 20)) MB in $n file(s), $DL_JOBS connections, unpacking while downloading"
+    stream_extract "$name" "$sha" "$stage/x" "$stage" "" <<<"$list" || rc=$?
+    case "$rc" in
+        0) ;;
+        2) die "$name: checksum mismatch — nothing installed" ;;
+        *) die "download of $name failed — re-run to resume" ;;
+    esac
+    merge_into "$stage/x" "$dest"
+    rm -rf "$stage"
+    note_time "${name%%-1.*}" $((SECONDS - t0)) "$bytes"
+    log "$name: done in $(fmt_secs $((SECONDS - t0))), $((bytes / (SECONDS - t0 + 1) >> 20)) MB/s average"
+}
+
 # Tool pins: GitHub release by default, the old Google Drive files with CAVLI_BUNDLE_SOURCE=drive.
 pick_files() {
     local v="BUNDLE_FILES_$1"; [[ "${CAVLI_BUNDLE_SOURCE:-github}" == drive ]] && v="${v}_drive"
@@ -312,9 +456,16 @@ prestage_component() {
     fi
     stage="$CAVLI_ROOT/cache/$component-$BUNDLE_VERSION"
     mkdir -p "$dest" "$stage"
+    local fast_pids=() fp
     while read -r name sha id; do
         [[ -n "$name" ]] || continue
         local f="$stage/$name"
+        # public GitHub assets: parallel ranges, unpacked while downloading, all files of the component at once
+        if [[ -z "$src_dir" && "$id" == gh:* ]] && (( DL_JOBS > 0 )); then
+            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "$component/$name: no sha256 to check against"
+            fetch_extract_gh "$name" "$sha" "$id" "$dest" "$stage/$name.d" & fast_pids+=($!)
+            continue
+        fi
         if [[ -n "$src_dir" ]]; then
             f="$src_dir/$name"
             # no pinned sum yet (unpublished): the store's SHA256SUMS
@@ -333,6 +484,7 @@ prestage_component() {
             *) die "don't know how to unpack $name";;
         esac
     done <<<"$files"
+    for fp in "${fast_pids[@]+"${fast_pids[@]}"}"; do wait "$fp" || die "$component: download failed — re-run to resume"; done
     printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
     printf '%s\n' "$pins" > "$dest/.pins"
     touch "$dest/.complete"
@@ -358,11 +510,47 @@ qcom_parts() {
 # Runs inside a throwaway container: gh device login (if needed), then for each missing part download its release assets,
 # verify, reassemble split files (name.partNNN) and unpack into $CAVLI_ROOT/<part>/<version>.
 qcom_fetch_script() {
+    declare -f fmt_secs log pool_init chunk_get stream_extract merge_into
     cat <<'SCRIPT'
 set -euo pipefail
 gh auth status --hostname github.com >/dev/null 2>&1 \
     || gh auth login --hostname github.com --git-protocol https --web \
     || { echo "qcom: GitHub login failed" >&2; exit 1; }
+mkdir -p "$QCOM_STAGE" "$QCOM_ROOT/cache"
+if (( DL_JOBS > 0 )); then
+    # parallel ranges of the private assets through the API (token stays in this container, in a 0600 header file)
+    HDR="$QCOM_STAGE/.hdr"; trap 'rm -f "$HDR"' EXIT
+    ( umask 077; printf 'Authorization: Bearer %s\nAccept: application/octet-stream\n' "$(gh auth token)" > "$HDR" )
+    pool_init
+    ids="$(gh api "repos/$QCOM_REPO/releases/tags/$QCOM_TAG" --jq '.assets[] | "\(.name) \(.id) \(.size)"')" \
+        || { echo "qcom: could not read $QCOM_REPO $QCOM_TAG — not an org member, or the release is missing" >&2; exit 1; }
+    fetch_part() {
+        local part="$1" name="cqm22x-$part-$QCOM_VERSION.tar.zst" stage="$QCOM_STAGE/$1" dest="$QCOM_ROOT/$1/$QCOM_VERSION" t0=$SECONDS sha list bytes rc=0 sid
+        sid="$(awk -v n="$name.sha256" '$1 == n {print $2}' <<<"$ids")"
+        list="$(awk -v n="$name" -v r="$QCOM_REPO" '$1 == n || index($1, n ".part") == 1 {print $1, $2, $3}' <<<"$ids" | sort | awk -v r="$QCOM_REPO" '{print "https://api.github.com/repos/" r "/releases/assets/" $2, $3}')"
+        [[ -n "$sid" && -n "$list" ]] || { echo "qcom: $name not in $QCOM_REPO $QCOM_TAG — the asset is missing" >&2; return 1; }
+        sha="$(curl -fsSL -H "@$HDR" "https://api.github.com/repos/$QCOM_REPO/releases/assets/$sid" | awk '{print $1; exit}')"
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "qcom: no sha256 for $name" >&2; return 1; }
+        bytes="$(awk '{s += $2} END {print s}' <<<"$list")"
+        log "$part: fetching $((bytes >> 20)) MB, $DL_JOBS connections, unpacking while downloading"
+        stream_extract "$part" "$sha" "$stage/x" "$stage" "$HDR" <<<"$list" || rc=$?
+        case "$rc" in
+            0) ;;
+            2) echo "qcom: checksum mismatch for $name — nothing installed" >&2; return 1;;
+            *) echo "qcom: download of $name failed — re-run to resume" >&2; return 1;;
+        esac
+        mkdir -p "$dest"; merge_into "$stage/x" "$dest"
+        printf '%s\n' "$QCOM_VERSION" > "$dest/BUNDLE_VERSION"
+        touch "$dest/.complete"
+        rm -rf "$stage"
+        printf '%s\t%s\t%s\n' "cqm22x-$part" $((SECONDS - t0)) "$bytes" >> "$QCOM_ROOT/cache/.timing"
+        log "$part: done in $(fmt_secs $((SECONDS - t0)))"
+    }
+    pids=(); for part in $QCOM_PARTS; do fetch_part "$part" & pids+=($!); done
+    fail=0; for p in "${pids[@]}"; do wait "$p" || fail=1; done
+    (( fail == 0 )) && rm -rf "$QCOM_STAGE"
+    exit $fail
+fi
 for part in $QCOM_PARTS; do
     name="cqm22x-$part-$QCOM_VERSION.tar.zst"
     stage="$QCOM_STAGE/$part"; dest="$QCOM_ROOT/$part/$QCOM_VERSION"
@@ -506,6 +694,7 @@ prestage_qcom() {
         -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)" -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)" -e "CQM_HOME=$HOME" \
         -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$QCOM_RELEASE_TAG" -e "QCOM_VERSION=$BUNDLE_VERSION" \
         -e "QCOM_PARTS=${missing# }" -e "QCOM_ROOT=$CAVLI_ROOT" -e "QCOM_STAGE=$CAVLI_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG" \
+        -e "DL_JOBS=$DL_JOBS" -e "DL_CHUNK=$DL_CHUNK" ${GH_TOKEN:+-e GH_TOKEN} \
         -v "$CAVLI_ROOT/home:$HOME" -v "$CAVLI_ROOT:$CAVLI_ROOT" \
         "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script)" 2>&1 | tee "$qlog"
     rc=${PIPESTATUS[0]}
@@ -717,8 +906,11 @@ build_run_args() {
 }
 
 pull_image() {
+    local t0=$SECONDS
     log "pulling $DOCKER_IMG:$IMAGE_TAG"
-    docker pull "$DOCKER_IMG:$IMAGE_TAG" >/dev/null 2>&1 && return 0
+    docker pull "$DOCKER_IMG:$IMAGE_TAG" >/dev/null 2>&1 \
+        && { note_time image $((SECONDS - t0)) "$(docker image inspect -f '{{.Size}}' "$DOCKER_IMG:$IMAGE_TAG" 2>/dev/null || echo 0)"
+             log "image: pulled in $(fmt_secs $((SECONDS - t0)))"; return 0; }
     docker image inspect "$DOCKER_IMG:$IMAGE_TAG" >/dev/null 2>&1 \
         || die "could not pull $DOCKER_IMG:$IMAGE_TAG (network, ghcr.io access, or the tag is not published yet)"
     log "warning: pull failed, using the local image $DOCKER_IMG:$IMAGE_TAG"
@@ -763,6 +955,22 @@ seed_downloads() {
         || log "warning: could not seed $(yocto_downloads_dir "$1") (the selinux / seeded aq62 recipes will fail to fetch)"
 }
 
+# Stage the bundles of one product (runs in the background, one per product).
+prestage_product() {
+    local c
+    case "$1" in
+        cqm220) prestage_component openwrt "$(openwrt_files)"
+                [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
+                for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
+        cqm211) prestage_component yocto "$(pick_files yocto)"
+                for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
+        cqm212) prestage_optional openwrt212
+                [[ "$KPREBUILTS" == 1 ]] && prestage_optional kprebuilts212
+                for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
+    esac
+    return 0
+}
+
 cmd_setup() {
     local new_products="${*:-$ALL_PRODUCTS}" c
     new_products="$(tr ', ' '  ' <<<"$new_products")"
@@ -772,22 +980,24 @@ cmd_setup() {
 
     guard_container "$CONTAINER_NAME"
 
+    local t_all=$SECONDS pull_pid jpids=() pid rc=0
+    mkdir -p "$CAVLI_ROOT/cache"; : > "$CAVLI_ROOT/cache/.timing"
+    (( DL_JOBS > 0 )) && pool_init
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+    # the image pull shares the link with the bundles: start it first, wait for it where it is needed
+    pull_image & pull_pid=$!
+    # every product's bundles at once (they share the connection pool); aq62 needs the others' prebuilts, below
+    for p in $new_products; do prestage_product "$p" & jpids+=($!); done
     # external (default): never fetch/stage/decrypt qcom. internal (or a
     # previous internal setup recorded in state.json): stage it.
-    [[ "$FULL_MODE" == 1 ]] && { [[ -n "$(qcom_parts "$new_products")" ]] && prestage_qcom "$new_products" \
-        || log "internal: $new_products takes no Qualcomm tools (aq62 is apps only)"; }
-    for p in $new_products; do
-        case "$p" in
-            cqm220) prestage_component openwrt "$(openwrt_files)"
-                               [[ "$BUILDROOT" == 1 ]] && prestage_buildroot
-                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-            cqm211)            prestage_component yocto "$(pick_files yocto)"
-                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-            cqm212)            prestage_optional openwrt212
-                               [[ "$KPREBUILTS" == 1 ]] && prestage_optional kprebuilts212
-                               for c in $(line_bundles "$p"); do prestage_optional "$c"; done;;
-        esac
-    done
+    if [[ "$FULL_MODE" == 1 ]]; then
+        if [[ -n "$(qcom_parts "$new_products")" ]]; then
+            wait "$pull_pid" || exit 1; pull_pid=""
+            prestage_qcom "$new_products"
+        else log "internal: $new_products takes no Qualcomm tools (aq62 is apps only)"; fi
+    fi
+    for pid in "${jpids[@]}"; do wait "$pid" || rc=1; done
+    (( rc == 0 )) || die "setup failed (see above) — re-run to resume"
     # aq62 needs only the kernel prebuilts: reuse cqm220's copy, else stage the kp220 pack alone
     if [[ " $new_products " == *" aq62 "* ]]; then
         [[ -n "$(resolve_prebuilts_dir "$CAVLI_ROOT/qcom/$BUNDLE_VERSION")" ]] || prestage_component prebuilts "$BUNDLE_FILES_prebuilts"
@@ -797,7 +1007,7 @@ cmd_setup() {
     local installed; installed="$(state_get '.products | keys | join(" ")')"
     local all_products; all_products="$(printf '%s\n' $installed $new_products | sort -u | tr '\n' ' ')"
 
-    pull_image
+    [[ -z "$pull_pid" ]] || wait "$pull_pid" || exit 1
     merge_downloads "$all_products"
 
     build_run_args "$all_products"
@@ -824,8 +1034,17 @@ cmd_setup() {
     state_merge "$new_products"
     [[ "$SSH_ENABLED" == 1 ]] && { [[ -d "$HOME/.ssh" ]] && log "mounted ~/.ssh read-only" || log "~/.ssh not found — skipped"; } \
         || log "~/.ssh not mounted (--no-ssh)"
+    print_timing "$t_all"
     log "done. container: $CONTAINER_NAME. installed products: $(state_get '.products | keys | join(",")')"
     log "shell in: docker exec -it --user \$(id -un) -e HOME=\$HOME $CONTAINER_NAME bash -l"
+}
+
+# Timing summary of this run: per item wall time (download + unpack overlap), size and rate; $1 = start in $SECONDS.
+print_timing() {
+    local f="$CAVLI_ROOT/cache/.timing"
+    [[ -s "$f" ]] || return 0
+    log "timing (wall $(fmt_secs $((SECONDS - $1)))):"
+    sort -k1,1 "$f" | awk -F'\t' '{printf "  %-26s %8.1f GB %8s %6d MB/s\n", $1, $3 / 1073741824, sprintf("%dm%02ds", $2 / 60, $2 % 60), ($2 > 0 ? $3 / $2 / 1048576 : 0)}'
 }
 
 cmd_update() {
