@@ -69,6 +69,22 @@ is reused until you pass `--external`. `update` keeps the mounts and mode, but t
 the script you have: download the newer script first. `--name <x>` makes a separate container and state
 (`cavli_<user>_<x>`); with a separate `CAVLI_ROOT` it is a fully isolated instance.
 
+## Download speed
+
+`setup` fetches everything at once: all products' bundles and the image pull run together, each GitHub file is cut
+into 256 MB ranges taken by a pool of 8 connections (one connection gives about 35 MB/s, 4 or more fill a 1 Gb/s link),
+and each bundle is read back in order as one stream `sha256 | zstd -d | tar`, so it unpacks while it downloads. The
+sha256 is checked on that same stream; a mismatch removes the unpacked files and nothing is marked complete. Ranges stay
+in `$CAVLI_ROOT/cache` until the bundle is verified, so an interrupted `setup` resumes. Each bundle prints its progress
+(MB, MB/s, elapsed) every 10 s, and `setup` ends with a timing table.
+
+- `CAVLI_DL_JOBS=<n>` connections (default 8), `CAVLI_DL_CHUNK_MB=<n>` range size (default 256).
+  `CAVLI_DL_JOBS=0` is the old way, one file at a time.
+- No extra tool: only `curl`, `tar`, `zstd`, `sha256sum`. Unpacking needs about as much free disk as the bundle is
+  big, on top of the unpacked size, until it is verified.
+- For `--internal` without a terminal (CI), `GH_TOKEN` in the environment is used instead of the device login; it is
+  passed to the throwaway container and never written to disk.
+
 ## Coming from cqm2xx-setup or aq62-setup
 
 | Old | New |
