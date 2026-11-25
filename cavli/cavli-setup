@@ -1073,8 +1073,11 @@ prestage_product() {
                 for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
         cqm211) prestage_component yocto "$(pick_files yocto)"
                 for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
-        cqm212) prestage_optional openwrt212
-                [[ "$KPREBUILTS" == 1 ]] && prestage_optional kprebuilts212
+        cqm212) local pids=() pid rc=0    # both at once: a queued one must not hold back the other's download
+                prestage_optional openwrt212 & pids+=($!)
+                if [[ "$KPREBUILTS" == 1 ]]; then prestage_optional kprebuilts212 & pids+=($!); fi
+                for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+                (( rc == 0 )) || return 1
                 for c in $(line_bundles "$1"); do prestage_optional "$c"; done;;
     esac
     return 0
