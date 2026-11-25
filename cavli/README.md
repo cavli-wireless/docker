@@ -75,13 +75,23 @@ the script you have: download the newer script first. `--name <x>` makes a separ
 into 256 MB ranges taken by a pool of 8 connections (one connection gives about 35 MB/s, 4 or more fill a 1 Gb/s link),
 and each bundle is read back in order as one stream `sha256 | zstd -d | tar`, so it unpacks while it downloads. The
 sha256 is checked on that same stream; a mismatch removes the unpacked files and nothing is marked complete. Ranges stay
-in `$CAVLI_ROOT/cache` until the bundle is verified, so an interrupted `setup` resumes. Each bundle prints its progress
-(MB, MB/s, elapsed) every 10 s, and `setup` ends with a timing table.
+in the cache until the bundle is verified, so an interrupted `setup` resumes: it unpacks again from the start, without
+downloading the kept ranges again. Each bundle prints downloaded %, unpacking %, MB/s and elapsed time every 10 s
+(100% downloaded is not done), and `setup` ends with a timing table.
+
+To keep downloads from running far ahead of a slow disk, 2 bundle files are fetched and unpacked at a time (cqm211's
+Yocto cache first), each at most 16 ranges ahead of `tar`. The qcom container has its own limit of 2.
 
 - `CAVLI_DL_JOBS=<n>` connections (default 8), `CAVLI_DL_CHUNK_MB=<n>` range size (default 256).
   `CAVLI_DL_JOBS=0` is the old way, one file at a time.
-- No extra tool: only `curl`, `tar`, `zstd`, `sha256sum`. Unpacking needs about as much free disk as the bundle is
-  big, on top of the unpacked size, until it is verified.
+- `CAVLI_UNPACK_JOBS=<n>` files at a time (default 2, 0 = no limit), `CAVLI_DL_AHEAD=<n>` ranges ahead of `tar`
+  (default twice `CAVLI_DL_JOBS`).
+- `CAVLI_CACHE_DIR=<absolute dir>` keeps the downloaded ranges there, for example on another disk (default
+  `$CAVLI_ROOT/cache`). Unpacking stays under `CAVLI_ROOT`. Give each `CAVLI_ROOT` its own cache dir.
+- `CAVLI_DL_KEEP=0` deletes each range once `tar` has read it, so the cache holds a few GB at most; a re-run after a
+  failure then downloads the deleted ranges again.
+- No extra tool: only `curl`, `tar`, `zstd`, `sha256sum`. With the ranges kept (default), the cache needs about the
+  bundle's size in free disk, on top of the unpacked size, until it is verified.
 - For `--internal` without a terminal (CI), `GH_TOKEN` in the environment is used instead of the device login; it is
   passed to the throwaway container and never written to disk.
 

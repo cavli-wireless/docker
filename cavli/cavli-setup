@@ -286,19 +286,30 @@ release_fetch() {
 # One GitHub connection gives ~35 MB/s; 4+ together fill a 1 Gb/s link. So every GitHub asset is cut into ranges of
 # CAVLI_DL_CHUNK_MB, fetched by a shared pool of CAVLI_DL_JOBS connections (all items together) and read back in order
 # as ONE stream: sha256 | zstd -d | tar, extracting while the rest still downloads (no join copy, no second sha pass).
-# Chunks stay in cache/ until the item is verified, so a re-run resumes. CAVLI_DL_JOBS=0: old one-file-at-a-time path.
+# Chunks stay in the cache until the item is verified, so a re-run resumes. CAVLI_DL_JOBS=0: old one-file-at-a-time path.
+# Backlog limits: CAVLI_UNPACK_JOBS items at a time (0 = no limit), each at most CAVLI_DL_AHEAD ranges ahead of tar.
 DL_JOBS="${CAVLI_DL_JOBS:-8}"; DL_CHUNK_MB="${CAVLI_DL_CHUNK_MB:-256}"
 [[ "$DL_JOBS" =~ ^[0-9]+$ && "$DL_CHUNK_MB" =~ ^[1-9][0-9]*$ ]] || { echo "[cavli-setup] error: CAVLI_DL_JOBS / CAVLI_DL_CHUNK_MB must be numbers" >&2; exit 1; }
 DL_CHUNK=$((DL_CHUNK_MB * 1048576))
+UNPACK_JOBS="${CAVLI_UNPACK_JOBS:-2}"; DL_AHEAD="${CAVLI_DL_AHEAD:-$((DL_JOBS * 2))}"
+DL_KEEP="${CAVLI_DL_KEEP:-1}"                       # 0: delete each range once tar has read it (resume fetches it again)
+CACHE_DIR="${CAVLI_CACHE_DIR:-$CAVLI_ROOT/cache}"   # downloaded ranges only; may be on another disk
+[[ "$UNPACK_JOBS" =~ ^[0-9]+$ && "$DL_KEEP" =~ ^[01]$ ]] && { (( DL_JOBS == 0 )) || [[ "$DL_AHEAD" =~ ^[1-9][0-9]*$ ]]; } \
+    || { echo "[cavli-setup] error: CAVLI_UNPACK_JOBS / CAVLI_DL_AHEAD must be numbers, CAVLI_DL_KEEP 0 or 1" >&2; exit 1; }
+[[ "$CACHE_DIR" == /* ]] || { echo "[cavli-setup] error: CAVLI_CACHE_DIR must be an absolute path" >&2; exit 1; }
 
 fmt_secs() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
 
-# Connection pool: DL_JOBS tokens in a pipe on fd 9, inherited by every background job.
+# Two token pipes, inherited by every background job: DL_JOBS connections on fd 9, UNPACK_JOBS unpack slots on fd 8.
 pool_init() {
     local f i; f="$(mktemp -u "${TMPDIR:-/tmp}/cavli-pool.XXXXXX")"
     mkfifo "$f"; exec 9<>"$f"; rm -f "$f"
     for ((i = 0; i < DL_JOBS; i++)); do printf x >&9; done
+    mkfifo "$f"; exec 8<>"$f"; rm -f "$f"
+    for ((i = 0; i < UNPACK_JOBS; i++)); do printf x >&8; done
 }
+slot_take() { (( UNPACK_JOBS == 0 )) || read -r -n1 -u 8 _; }
+slot_give() { (( UNPACK_JOBS == 0 )) || printf x >&8; }
 
 # Content-Length of a URL ($2 = optional curl header file); fails when unknown.
 url_size() {
@@ -308,15 +319,24 @@ url_size() {
 }
 
 # One byte range FIRST..LAST of URL into OUT; resumes OUT.part, renamed when complete ($5 = optional curl header file).
+# Gives up, curl included, when the file $6 appears or the main shell is gone.
+chunk_stopped() { [[ -n "$1" && -e "$1" ]] || ! kill -0 $$ 2>/dev/null; }
 chunk_get() {
-    local url="$1" a="$2" b="$3" out="$4" hdr="${5:-}" want have try
+    local url="$1" a="$2" b="$3" out="$4" hdr="${5:-}" stop="${6:-}" want have try cpid i
     want=$((b - a + 1))
     [[ "$(stat -c%s "$out" 2>/dev/null || echo -1)" == "$want" ]] && return 0
     rm -f "$out"
     for try in 1 2 3 4 5 6; do
         have=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
         (( have < want )) || break
-        curl -fsSL ${hdr:+-H "@$hdr"} -r "$((a + have))-$b" "$url" >> "$out.part" 2>/dev/null || sleep $((try * 2))
+        chunk_stopped "$stop" && return 1
+        curl -fsSL ${hdr:+-H "@$hdr"} -r "$((a + have))-$b" "$url" >> "$out.part" 2>/dev/null & cpid=$!
+        while kill -0 "$cpid" 2>/dev/null; do
+            chunk_stopped "$stop" && { kill "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null; return 1; }
+            sleep 0.2
+        done
+        wait "$cpid" && continue
+        for ((i = 0; i < try * 10; i++)); do chunk_stopped "$stop" && return 1; sleep 0.2; done
     done
     [[ "$(stat -c%s "$out.part" 2>/dev/null || echo 0)" == "$want" ]] || { rm -f "$out.part"; return 1; }
     mv -f "$out.part" "$out"
@@ -324,6 +344,7 @@ chunk_get() {
 
 # stream_extract LABEL SHA DEST STAGE [HDRFILE] < lines "url size" (in stream order)
 # Fetches the ranges, extracts into DEST while downloading and checks the sha256 of the whole stream.
+# STAGE holds the ranges (named by byte offsets); DEST is emptied first and is the only place unpacked into.
 # Returns 1: download or unpack failed (STAGE kept, re-run resumes); 2: checksum mismatch (all removed).
 stream_extract() {
     local label="$1" sha="$2" dst="$3" stage="$4" hdr="${5:-}" url size i=0 j n a b total=0 chunks=() c f dpid rpid spid rc=0 got
@@ -332,28 +353,37 @@ stream_extract() {
         n=$(( (size + DL_CHUNK - 1) / DL_CHUNK ))
         for ((j = 0; j < n; j++)); do
             a=$((j * DL_CHUNK)); b=$((a + DL_CHUNK - 1)); (( b < size )) || b=$((size - 1))
-            chunks+=("$url $a $b $stage/$(printf 'c%02d_%04d' "$i" "$j")")
+            chunks+=("$url $a $b $stage/$(printf 'c%02d_%012d-%012d' "$i" "$a" "$b")")
         done
         total=$((total + size)); i=$((i + 1))
     done
-    mkdir -p "$stage" "$dst"; rm -f "$stage"/.fail "$stage"/.stop "$stage"/sha.out; rm -rf "$dst"; mkdir -p "$dst"
-    # dispatcher: chunks in stream order, each waits for a pool token
+    mkdir -p "$stage" "$dst"; rm -f "$stage"/.fail "$stage"/.stop "$stage"/sha.out "$stage"/used; rm -rf "$dst"; mkdir -p "$dst"
+    # dispatcher: chunks in stream order, at most DL_AHEAD past the one tar is on, each waits for a pool token
     (
+        k=0
         for c in "${chunks[@]}"; do
-            [[ -e "$stage/.stop" ]] && break
+            while ! chunk_stopped "$stage/.stop"; do
+                done_n=0; { read -r done_n _ < "$stage/used"; } 2>/dev/null || true
+                (( k - ${done_n:-0} < DL_AHEAD )) && break
+                sleep 0.2
+            done
+            k=$((k + 1))
+            chunk_stopped "$stage/.stop" && break
             read -r -n1 -u 9 _ || break
             ( # shellcheck disable=SC2086
-              set -- $c; chunk_get "$1" "$2" "$3" "$4" "$hdr" || : > "$stage/.fail"; printf x >&9 ) &
+              set -- $c; chunk_get "$1" "$2" "$3" "$4" "$hdr" "$stage/.stop" || : > "$stage/.fail"; printf x >&9 ) &
         done
         wait
     ) &
     dpid=$!
-    # progress every 10 s: bytes on disk, rate over the last interval, elapsed
+    # progress every 10 s: bytes downloaded, bytes handed to tar, download rate over the last interval, elapsed
     (
         local_t0=$SECONDS; prev=0; pt=$SECONDS
-        while sleep 10; do
+        while sleep 10 && kill -0 $$ 2>/dev/null; do
+            fed=0; { read -r _ fed < "$stage/used"; } 2>/dev/null || true; fed=${fed:-0}
             got=$(stat -c%s "$stage"/c* 2>/dev/null | awk '{s += $1} END {print s + 0}')
-            log "$label: $((got >> 20)) / $((total >> 20)) MB ($((100 * got / total))%)  $(( (got - prev) / (SECONDS - pt) >> 20 )) MB/s  $(fmt_secs $((SECONDS - local_t0)))"
+            (( DL_KEEP )) || got=$((got + fed))
+            log "$label: downloaded $((got >> 20)) / $((total >> 20)) MB ($((100 * got / total))%), unpacking $((100 * fed / total))%  $(( (got > prev ? got - prev : 0) / (SECONDS - pt) >> 20 )) MB/s  $(fmt_secs $((SECONDS - local_t0)))"
             prev=$got; pt=$SECONDS
         done
     ) &
@@ -362,6 +392,7 @@ stream_extract() {
     ( sha256sum < "$stage/sha.fifo" | cut -d' ' -f1 > "$stage/sha.out" ) &
     spid=$!
     {
+        k=0; fed=0
         for c in "${chunks[@]}"; do
             # shellcheck disable=SC2086
             set -- $c; f="$4"
@@ -369,12 +400,16 @@ stream_extract() {
                 [[ -e "$stage/.fail" ]] && exit 1
                 sleep 0.1
             done
-            cat "$f"
+            cat "$f" || exit 1
+            k=$((k + 1)); fed=$((fed + $3 - $2 + 1))
+            printf '%s %s\n' "$k" "$fed" > "$stage/used"
+            (( DL_KEEP )) || rm -f "$f"
         done
     } | tee "$stage/sha.fifo" | tar --use-compress-program="zstd -d -T0 --long=31" -xf - -C "$dst" || rc=$?
     kill "$rpid" 2>/dev/null || true; wait "$rpid" 2>/dev/null || true
     if (( rc != 0 )); then
-        touch "$stage/.stop"; kill "$dpid" "$spid" 2>/dev/null || true; wait "$dpid" "$spid" 2>/dev/null || true
+        # the dispatcher is not killed: it returns once its fetches saw .stop, so none outlives this attempt
+        touch "$stage/.stop"; kill "$spid" 2>/dev/null || true; wait "$dpid" "$spid" 2>/dev/null || true
         rm -rf "$dst"; return 1
     fi
     wait "$dpid" "$spid" 2>/dev/null || true
@@ -397,8 +432,10 @@ merge_into() {
 note_time() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$CAVLI_ROOT/cache/.timing"; }
 
 # fetch_extract_gh NAME SHA gh:<tag>[:<n>] DEST STAGE — one public bundle file into DEST (verified, unpacked).
+# Unpacks next to DEST under $CAVLI_ROOT/cache (the final move stays on one filesystem), wherever STAGE is.
 fetch_extract_gh() {
-    local name="$1" sha="$2" spec="$3" dest="$4" stage="$5" tag n=1 i p base list="" size rc=0 t0=$SECONDS bytes=0
+    local name="$1" sha="$2" spec="$3" dest="$4" stage="$5" tag n=1 i p base list="" size rc=0 t0=$SECONDS bytes=0 waited
+    local x; x="$CAVLI_ROOT/cache/unpack-$(basename "$(dirname "$5")")-$1"   # one per component and file
     tag="${spec#gh:}"; [[ "$tag" == *:* ]] && { n="${tag#*:}"; tag="${tag%%:*}"; }
     base="https://github.com/$BUNDLES_REPO/releases/download/$tag"
     mkdir -p "$stage"
@@ -413,17 +450,19 @@ fetch_extract_gh() {
         [[ "$size" =~ ^[0-9]+$ ]] || die "$name: could not read the size of $p (network, or the asset is missing in $tag)"
         list+="$base/$p $size"$'\n'; bytes=$((bytes + size))
     done
+    slot_take; waited=$((SECONDS - t0))
     log "$name: fetching $((bytes >> 20)) MB in $n file(s), $DL_JOBS connections, unpacking while downloading"
-    stream_extract "$name" "$sha" "$stage/x" "$stage" "" <<<"$list" || rc=$?
+    stream_extract "$name" "$sha" "$x" "$stage" "" <<<"$list" || rc=$?
+    slot_give    # before any die: a lost slot would leave the other items waiting
     case "$rc" in
         0) ;;
         2) die "$name: checksum mismatch — nothing installed" ;;
         *) die "download of $name failed — re-run to resume" ;;
     esac
-    merge_into "$stage/x" "$dest"
+    merge_into "$x" "$dest"
     rm -rf "$stage"
     note_time "${name%%-1.*}" $((SECONDS - t0)) "$bytes"
-    log "$name: done in $(fmt_secs $((SECONDS - t0))), $((bytes / (SECONDS - t0 + 1) >> 20)) MB/s average"
+    log "$name: done in $(fmt_secs $((SECONDS - t0))) ($(fmt_secs "$waited") before its unpack slot), $((bytes / (SECONDS - t0 + 1) >> 20)) MB/s average"
 }
 
 # Checksum of NAME in a --bundle-dir component dir: SHA256SUMS, else the release's NAME.sha256. Empty when neither.
@@ -468,6 +507,7 @@ prestage_component() {
         die "$component bundle not published yet — pass --bundle-dir with $component/ in it"
     fi
     stage="$CAVLI_ROOT/cache/$component-$BUNDLE_VERSION"
+    local ranges="$CACHE_DIR/$component-$BUNDLE_VERSION"
     mkdir -p "$dest" "$stage"
     local fast_pids=() fp parts
     while read -r name sha id; do
@@ -476,7 +516,7 @@ prestage_component() {
         # public GitHub assets: parallel ranges, unpacked while downloading, all files of the component at once
         if [[ -z "$src_dir" && "$id" == gh:* ]] && (( DL_JOBS > 0 )); then
             [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "$component/$name: no sha256 to check against"
-            fetch_extract_gh "$name" "$sha" "$id" "$dest" "$stage/$name.d" & fast_pids+=($!)
+            fetch_extract_gh "$name" "$sha" "$id" "$dest" "$ranges/$name.d" & fast_pids+=($!)
             continue
         fi
         parts=()
@@ -519,7 +559,7 @@ prestage_component() {
     printf '%s\n' "$BUNDLE_VERSION" > "$dest/BUNDLE_VERSION"
     printf '%s\n' "$pins" > "$dest/.pins"
     touch "$dest/.complete"
-    rm -rf "$stage"
+    rm -rf "$stage" "$ranges"
     ok_size="$(du -sh "$dest" | cut -f1)"
     log "$component $BUNDLE_VERSION ready ($ok_size) at $dest"
 }
@@ -541,7 +581,7 @@ qcom_parts() {
 # Runs inside a throwaway container: gh device login (if needed), then for each missing part download its release assets,
 # verify, reassemble split files (name.partNNN) and unpack into $CAVLI_ROOT/<part>/<version>.
 qcom_fetch_script() {
-    declare -f fmt_secs log pool_init chunk_get stream_extract merge_into
+    declare -f fmt_secs log pool_init slot_take slot_give chunk_stopped chunk_get stream_extract merge_into
     cat <<'SCRIPT'
 set -euo pipefail
 gh auth status --hostname github.com >/dev/null 2>&1 \
@@ -557,20 +597,23 @@ if (( DL_JOBS > 0 )); then
         || { echo "qcom: could not read $QCOM_REPO $QCOM_TAG — not an org member, or the release is missing" >&2; exit 1; }
     fetch_part() {
         local part="$1" name="cqm22x-$part-$QCOM_VERSION.tar.zst" stage="$QCOM_STAGE/$1" dest="$QCOM_ROOT/$1/$QCOM_VERSION" t0=$SECONDS sha list bytes rc=0 sid
+        local x="$QCOM_ROOT/cache/unpack-$1"
         sid="$(awk -v n="$name.sha256" '$1 == n {print $2}' <<<"$ids")"
         list="$(awk -v n="$name" -v r="$QCOM_REPO" '$1 == n || index($1, n ".part") == 1 {print $1, $2, $3}' <<<"$ids" | sort | awk -v r="$QCOM_REPO" '{print "https://api.github.com/repos/" r "/releases/assets/" $2, $3}')"
         [[ -n "$sid" && -n "$list" ]] || { echo "qcom: $name not in $QCOM_REPO $QCOM_TAG — the asset is missing" >&2; return 1; }
         sha="$(curl -fsSL -H "@$HDR" "https://api.github.com/repos/$QCOM_REPO/releases/assets/$sid" | awk '{print $1; exit}')"
         [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "qcom: no sha256 for $name" >&2; return 1; }
         bytes="$(awk '{s += $2} END {print s}' <<<"$list")"
+        slot_take
         log "$part: fetching $((bytes >> 20)) MB, $DL_JOBS connections, unpacking while downloading"
-        stream_extract "$part" "$sha" "$stage/x" "$stage" "$HDR" <<<"$list" || rc=$?
+        stream_extract "$part" "$sha" "$x" "$stage" "$HDR" <<<"$list" || rc=$?
+        slot_give
         case "$rc" in
             0) ;;
             2) echo "qcom: checksum mismatch for $name — nothing installed" >&2; return 1;;
             *) echo "qcom: download of $name failed — re-run to resume" >&2; return 1;;
         esac
-        mkdir -p "$dest"; merge_into "$stage/x" "$dest"
+        mkdir -p "$dest"; merge_into "$x" "$dest"
         printf '%s\n' "$QCOM_VERSION" > "$dest/BUNDLE_VERSION"
         touch "$dest/.complete"
         rm -rf "$stage"
@@ -716,7 +759,7 @@ prestage_qcom() {
     done
     [[ -n "$missing" ]] || return 0
     log "qcom:$missing — GitHub login (device code) + download from $QCOM_RELEASE_REPO tag $QCOM_RELEASE_TAG"
-    mkdir -p "$CAVLI_ROOT/home" "$CAVLI_ROOT/cache"
+    mkdir -p "$CAVLI_ROOT/home" "$CAVLI_ROOT/cache" "$CACHE_DIR"
     # -t only with a real terminal on stdin — a plain -i still shows the device code over SSH or a background run.
     local tty_flag=-i; [[ -t 0 ]] && tty_flag=-it
     local qlog rc; qlog="$(mktemp)"
@@ -724,9 +767,9 @@ prestage_qcom() {
     docker run --rm "$tty_flag" \
         -e "CQM_UID=$(id -u)" -e "CQM_GID=$(id -g)" -e "CQM_USER=$(id -un)" -e "CQM_GROUP=$(id -gn)" -e "CQM_HOME=$HOME" \
         -e "QCOM_REPO=$QCOM_RELEASE_REPO" -e "QCOM_TAG=$QCOM_RELEASE_TAG" -e "QCOM_VERSION=$BUNDLE_VERSION" \
-        -e "QCOM_PARTS=${missing# }" -e "QCOM_ROOT=$CAVLI_ROOT" -e "QCOM_STAGE=$CAVLI_ROOT/cache/qcom-release-$QCOM_RELEASE_TAG" \
-        -e "DL_JOBS=$DL_JOBS" -e "DL_CHUNK=$DL_CHUNK" ${GH_TOKEN:+-e GH_TOKEN} \
-        -v "$CAVLI_ROOT/home:$HOME" -v "$CAVLI_ROOT:$CAVLI_ROOT" \
+        -e "QCOM_PARTS=${missing# }" -e "QCOM_ROOT=$CAVLI_ROOT" -e "QCOM_STAGE=$CACHE_DIR/qcom-release-$QCOM_RELEASE_TAG" \
+        -e "DL_JOBS=$DL_JOBS" -e "DL_CHUNK=$DL_CHUNK" -e "DL_AHEAD=$DL_AHEAD" -e "DL_KEEP=$DL_KEEP" -e "UNPACK_JOBS=$UNPACK_JOBS" ${GH_TOKEN:+-e GH_TOKEN} \
+        -v "$CAVLI_ROOT/home:$HOME" -v "$CAVLI_ROOT:$CAVLI_ROOT" -v "$CACHE_DIR:$CACHE_DIR" \
         "$DOCKER_IMG:$IMAGE_TAG" bash -c "$(qcom_fetch_script)" 2>&1 | tee "$qlog"
     rc=${PIPESTATUS[0]}
     set -e
@@ -1018,7 +1061,14 @@ cmd_setup() {
     # the image pull shares the link with the bundles: start it first, wait for it where it is needed
     pull_image & pull_pid=$!
     # every product's bundles at once (they share the connection pool); aq62 needs the others' prebuilts, below
-    for p in $new_products; do prestage_product "$p" & jpids+=($!); done
+    # cqm211 (yocto, most of the bytes) goes first so it does not queue behind the small items for an unpack slot
+    local order="$new_products"
+    if (( DL_JOBS > 0 && UNPACK_JOBS > 0 )) && [[ " $new_products " == *" cqm211 "* && ! -f "$CAVLI_ROOT/yocto/$BUNDLE_VERSION/.complete" ]]; then
+        prestage_product cqm211 & jpids+=($!)
+        sleep 5
+        order="$(tr ' ' '\n' <<<"$new_products" | grep -vxF cqm211 | tr '\n' ' ' || true)"
+    fi
+    for p in $order; do prestage_product "$p" & jpids+=($!); done
     # external (default): never fetch/stage/decrypt qcom. internal (or a
     # previous internal setup recorded in state.json): stage it.
     if [[ "$FULL_MODE" == 1 ]]; then
