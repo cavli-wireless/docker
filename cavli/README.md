@@ -213,7 +213,9 @@ cp <modem>/NON-HLOS.ubifs build/ && (cd build && bash make_binary.sh)   # → bu
   - `prebuilts` (aq62 without cqm220): `cqm22x-kp220-1.1.0.tar.zst`
   - `kprebuilts212`: `cqm22x-kp212-1.1.0.tar.zst`; `openwrt212`: `cqm22x-openwrt212-1.1.0.tar.zst`
   - `yocto` (cqm211): `cqm22x-yocto-downloads-1.1.0.tar.zst`
-  - `--internal`: `qcom_common`, `qcom_220`, `qcom_212`, `qcom_211`, each `cqm22x-<part>-1.1.0.tar.zst` (joined, not `.partNN`)
+  - `--internal`: `qcom_common`, `qcom_220`, `qcom_212`, `qcom_211`, each `cqm22x-<part>-1.1.0.tar.zst`, whole or as the
+    release's `.partNNN` files. Their sum comes from `<component>/SHA256SUMS`, else from the release's `<file>.sha256`
+    next to it; with neither, `setup` stops.
   - every `<component>/` also holds a `BUNDLE_VERSION` file containing `1.1.0`.
 - `CAVLI_BUNDLE_SOURCE=drive` takes items 2, 3 and 4 from the old Google Drive files (for cqm211 that stages the old
   `downloads` and `llvm-arm-toolchain-ship` packs) (not remembered by `update`).
