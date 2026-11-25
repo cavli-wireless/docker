@@ -589,9 +589,9 @@ gh auth status --hostname github.com >/dev/null 2>&1 \
     || { echo "qcom: GitHub login failed" >&2; exit 1; }
 mkdir -p "$QCOM_STAGE" "$QCOM_ROOT/cache"
 if (( DL_JOBS > 0 )); then
-    # parallel ranges of the private assets through the API (token stays in this container, in a 0600 header file)
-    HDR="$QCOM_STAGE/.hdr"; trap 'rm -f "$HDR"' EXIT
-    ( umask 077; printf 'Authorization: Bearer %s\nAccept: application/octet-stream\n' "$(gh auth token)" > "$HDR" )
+    # parallel ranges of the private assets through the API; the token header is a 0600 file in the container's RAM only
+    HDR="$(mktemp /dev/shm/cavli-hdr.XXXXXX)"; trap 'rm -f "$HDR"' EXIT
+    printf 'Authorization: Bearer %s\nAccept: application/octet-stream\n' "$(gh auth token)" > "$HDR"
     pool_init
     ids="$(gh api "repos/$QCOM_REPO/releases/tags/$QCOM_TAG" --jq '.assets[] | "\(.name) \(.id) \(.size)"')" \
         || { echo "qcom: could not read $QCOM_REPO $QCOM_TAG — not an org member, or the release is missing" >&2; exit 1; }
