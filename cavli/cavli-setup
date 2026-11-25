@@ -295,8 +295,9 @@ DL_CHUNK=$((DL_CHUNK_MB * 1048576))
 UNPACK_JOBS="${CAVLI_UNPACK_JOBS:-2}"; DL_AHEAD="${CAVLI_DL_AHEAD:-$((DL_JOBS * 2))}"
 DL_KEEP="${CAVLI_DL_KEEP:-1}"                       # 0: delete each range once tar has read it (resume fetches it again)
 CACHE_DIR="${CAVLI_CACHE_DIR:-$CAVLI_ROOT/cache}"   # downloaded ranges only; may be on another disk
-# A connection slower than DL_MIN_BPS bytes/s for DL_STALL_S seconds is dropped and its range resumed (0 = never).
-DL_MIN_BPS="${CAVLI_DL_MIN_BPS:-2000000}"; DL_STALL_S=15
+# A connection under DL_MIN_BPS bytes/s for DL_STALL_S seconds is dropped and its range resumed (0 = never).
+# The default only catches stalls: a limit near a slow link's share per connection would keep dropping good ones.
+DL_MIN_BPS="${CAVLI_DL_MIN_BPS:-1000}"; DL_STALL_S=15
 [[ "$DL_MIN_BPS" =~ ^[0-9]+$ ]] || { echo "[cavli-setup] error: CAVLI_DL_MIN_BPS must be a number" >&2; exit 1; }
 [[ "$UNPACK_JOBS" =~ ^[0-9]+$ && "$DL_KEEP" =~ ^[01]$ ]] && { (( DL_JOBS == 0 )) || [[ "$DL_AHEAD" =~ ^[1-9][0-9]*$ ]]; } \
     || { echo "[cavli-setup] error: CAVLI_UNPACK_JOBS / CAVLI_DL_AHEAD must be numbers, CAVLI_DL_KEEP 0 or 1" >&2; exit 1; }
@@ -339,33 +340,44 @@ url_size() {
 # Gives up, curl included, when the file $6 appears or the main shell is gone.
 chunk_stopped() { [[ -n "$1" && -e "$1" ]] || ! kill -0 $$ 2>/dev/null; }
 chunk_get() {
-    local url="$1" a="$2" b="$3" out="$4" hdr="${5:-}" stop="${6:-}" want have got cpid rc i fails=0 tries=0 t0 ms tag
+    local url="$1" a="$2" b="$3" out="$4" hdr="${5:-}" stop="${6:-}" want have got cpid rc i fails=0 tries=0 t0 t1 ms tag slow=()
+    # curl turns "--speed-limit 0" with a speed time into 1 byte/s, so 0 has to leave both out
+    [[ "$DL_MIN_BPS" =~ ^0+$ ]] || slow=(--speed-limit "$DL_MIN_BPS" --speed-time "$DL_STALL_S")
     want=$((b - a + 1))
     [[ "$(stat -c%s "$out" 2>/dev/null || echo -1)" == "$want" ]] && return 0
     rm -f "$out"
     tag="${out%/*}"; tag="${tag##*/}"; tag="range ${tag%.d} ${out##*/}"
     t0="${EPOCHREALTIME//[!0-9]/}"
-    # an attempt that moved 1 MB or more does not count against the 6: a slow link still finishes
-    while (( fails < 6 && tries < 200 )); do
+    # Gives up after 6 attempts in a row without progress. Progress: 1 MB or more, or any bytes in an attempt that
+    # lasted DL_STALL_S. There is no other limit, so a steady slow link finishes.
+    while (( fails < 6 )); do
         have=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
         (( have < want )) || break
         chunk_stopped "$stop" && return 1
-        tries=$((tries + 1)); rc=0
-        curl -fsSL --connect-timeout 20 --speed-limit "$DL_MIN_BPS" --speed-time "$DL_STALL_S" ${hdr:+-H "@$hdr"} \
+        tries=$((tries + 1)); rc=0; t1="${EPOCHREALTIME//[!0-9]/}"
+        curl -fsSL --connect-timeout 20 "${slow[@]}" ${hdr:+-H "@$hdr"} \
             -r "$((a + have))-$b" "$url" >> "$out.part" 2>/dev/null & cpid=$!
         while kill -0 "$cpid" 2>/dev/null; do
             chunk_stopped "$stop" && { kill "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null; return 1; }
             sleep 0.2
         done
         wait "$cpid" || rc=$?
-        (( rc != 0 )) || continue
         got=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
-        log "$tag: curl error $rc at $((got >> 20)) of $((want >> 20)) MB, resuming"
-        (( got - have < 1048576 )) || continue
+        (( rc == 0 )) || log "$tag: curl error $rc at $((got >> 20)) of $((want >> 20)) MB"
+        (( got < want )) || break
+        if (( got - have >= 1048576 || (got > have && ${EPOCHREALTIME//[!0-9]/} - t1 >= DL_STALL_S * 1000000) )); then
+            fails=0; continue
+        fi
         fails=$((fails + 1))
+        (( fails < 6 )) || break
         for ((i = 0; i < fails * 10; i++)); do chunk_stopped "$stop" && return 1; sleep 0.2; done
     done
-    [[ "$(stat -c%s "$out.part" 2>/dev/null || echo 0)" == "$want" ]] || { rm -f "$out.part"; log "$tag: failed after $tries tries"; return 1; }
+    got=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
+    if (( got != want )); then
+        (( got < want )) || rm -f "$out.part"    # longer than the range: unusable. A shorter one is kept for resume.
+        log "$tag: failed after $tries tries at $got of $want bytes; re-run to resume (CAVLI_DL_MIN_BPS=0 never drops a slow connection)"
+        return 1
+    fi
     mv -f "$out.part" "$out"
     ms=$(( (${EPOCHREALTIME//[!0-9]/} - t0) / 1000 + 1 )); i=$((want * 10000 / (ms * 1048576)))
     log "$tag: $((want >> 20)) MB in $((ms / 1000)).$((ms % 1000 / 100))s, $((i / 10)).$((i % 10)) MB/s, tries $tries"

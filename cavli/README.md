@@ -84,27 +84,37 @@ ahead while they wait. No file gets more than 24 ranges ahead of its `tar`, whic
 ahead of a slow disk. `--internal` downloads the Qualcomm parts in a second container with its own pool and its own 2
 unpack slots, so it can use twice the connections.
 
-A connection that stays under 2 MB/s for 15 s (or does not connect in 20 s) is dropped and its range resumes where
-it stopped. An attempt that moved at least 1 MB does not count against the 6 tries, so a slow link still finishes.
-Each finished range prints one line with its size, seconds, MB/s and tries.
+A connection that stays under 1000 bytes/s for 15 s (or does not connect in 20 s) is dropped and its range resumes
+where it stopped. The limit only catches stalls. A range fails after 6 attempts in a row without progress (progress:
+1 MB or more, or any bytes in an attempt that lasted 15 s); there is no other limit, so a slow link that keeps moving
+finishes. The partial range stays in the cache and a re-run resumes it. Each finished range prints one line with its
+size, seconds, MB/s and tries.
 
 Measured on one host (1 Gb/s link, NVMe, image already local, few runs, so expect other numbers elsewhere):
 
-- external cqm220+cqm212 from empty: 8 connections 84-104 s (3 runs), 12 connections 80-82 s (2 runs), 16
-  connections 73-83 s (3 runs). 12 and 16 were level; the default is 12.
-- external, all four products, 12 connections: 5m51s, 34 GB received at 97 MB/s average (1 run).
-- one connection's rate varies: full ranges ran at 2 to 84 MB/s, many at only 3 to 4 MB/s. That is above the 2 MB/s
-  drop limit, and with in-order unpacking one slow range can hold up the end of a file.
+- external cqm220+cqm212 from empty, seconds per run: 8 connections 104 and 89, and 84 with `CAVLI_DL_MIN_BPS=0`;
+  12 connections 80, 82, 77 and 80; 16 connections 83 and 83, and 73 with `CAVLI_DL_MIN_BPS=0`. The other runs had a
+  2 MB/s drop limit (an earlier default). In those builds `0` still meant 1 byte/s. 12 and 16 were level; the default
+  is 12.
+- drop limit at 12 connections, 2 runs each: 2 MB/s 77 and 80 s (also counted above), 8 MB/s 79 and 83 s with 27
+  drops per run. A higher limit gave no gain.
+- external, all four products, 12 connections, 2 MB/s limit: 5m51s, 34 GB received at 97 MB/s average (1 run).
+- one connection's rate varies: full ranges ran at 2 to 84 MB/s. Part of the low end is likely the connections sharing the
+  link (with 16 of them the median range was under 4 MB/s in 2 of 3 runs), not only slow servers. With in-order
+  unpacking one slow range can hold up the end of a file.
 - `--internal` was not timed with 12 connections (24 with the Qualcomm container).
 
 Only one `setup` runs on a `CAVLI_ROOT` (and cache dir) at a time; a second one waits 20 s, then stops. After a killed
-run, the lock stays until its last process has ended.
+run, the lock stays until its last process has ended. The Qualcomm download container is not stopped by killing the
+script with `kill -9`: it keeps downloading to its end (see `docker ps`; stop it with `docker stop`), and its own lock
+keeps a second one out.
 
 - `CAVLI_DL_JOBS=<n>` connections (default 12), `CAVLI_DL_CHUNK_MB=<n>` range size (default 256).
   `CAVLI_DL_JOBS=0` is the old way, one file at a time.
 - `CAVLI_UNPACK_JOBS=<n>` files at a time (default 2, 0 = no limit), `CAVLI_DL_AHEAD=<n>` ranges ahead of `tar`
   (default twice `CAVLI_DL_JOBS`).
-- `CAVLI_DL_MIN_BPS=<bytes/s>` the speed under which a connection is dropped (default 2000000, 0 = never).
+- `CAVLI_DL_MIN_BPS=<bytes/s>` the speed under which a connection is dropped after 15 s (default 1000; 0 = never,
+  and then a connection that stops sending can hang the run).
 - `CAVLI_CACHE_DIR=<absolute dir>` keeps the downloaded ranges there, for example on another disk (default
   `$CAVLI_ROOT/cache`). Unpacking stays under `CAVLI_ROOT`. Give each `CAVLI_ROOT` its own cache dir.
 - `CAVLI_DL_KEEP=0` deletes each range once `tar` has read it; a re-run after a failure then downloads the deleted
@@ -112,7 +122,9 @@ run, the lock stays until its last process has ended.
   once: at the defaults the cache can reach about 13 GB external and 23 GB with `--internal`.
 - With the ranges kept (default), the cache needs about the bundle's size in free disk, on top of the unpacked size,
   until it is verified. All four products took about 75 GB of writes external and 143 GB internal. `setup` checks the free
-  space before it downloads (`CAVLI_SKIP_SPACE_CHECK=1` skips the check).
+  space before it downloads (`CAVLI_SKIP_SPACE_CHECK=1` skips the check). The check covers only the disk of
+  `CAVLI_ROOT`: it does not check a `CAVLI_CACHE_DIR` on another disk, counts no cache with `CAVLI_DL_KEEP=0` (it can
+  reach the sizes above), and does not count aq62's prebuilts or buildroot.
 - For `--internal` without a terminal (CI), `GH_TOKEN` in the environment is used instead of the device login. The
   script keeps its own copy of the token only in the container's RAM, but Docker stores the variable in the container's
   settings: while the throwaway container exists, anyone who can use Docker on the host can read it with
