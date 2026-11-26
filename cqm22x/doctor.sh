@@ -68,6 +68,8 @@ case "$PRODUCT" in
     cqm211)  WANT_YOCTO=yes; WANT_OPENWRT=no;;
     # cqm212 mounts its own aarch64 cache at the same /pkg/openwrt-prebuilt-backup path.
     cqm212)  WANT_YOCTO=no;  WANT_OPENWRT=yes;;
+    # aq62: apps build only (kernel + Yocto), no OpenWrt, no qcom tools.
+    aq62)    WANT_YOCTO=yes; WANT_OPENWRT=no;  WANT_QCOM=no;;
     sdk)     WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_QCOM=no;;
     buildroot) WANT_YOCTO=no; WANT_OPENWRT=no; WANT_QCOM=no; WANT_BUILDROOT=yes;;
     *)       WANT_YOCTO=no;  WANT_OPENWRT=yes; WANT_BUILDROOT=yes;;
@@ -127,6 +129,14 @@ if command -v zip >/dev/null 2>&1; then ok "host tool" "zip"; else bad "host too
 # cqm212 meta unpacks the wlan qcn9224 squashfs image via unsquash.py -> unsquashfs.
 if command -v unsquashfs >/dev/null 2>&1; then ok "host tool" "unsquashfs"; else bad "host tool" "unsquashfs" "missing"; fi
 
+# aq62 (Yocto kirkstone + TelAF) host tools, in the image since 1.1.7.
+for t in lz4c xmllint ubinize checkmodule java; do
+    if command -v "$t" >/dev/null 2>&1; then ok "host tool" "$t"; else bad "host tool" "$t" "missing"; fi
+done
+if python2 -c 'import bz2' 2>/dev/null; then ok "python2 bz2"; else bad "python2 bz2" "importable" "ImportError"; fi
+if python3 -c 'import jinja2.ext; jinja2.ext.with_' 2>/dev/null; then ok "python3 jinja2 2.x"; else bad "python3 jinja2 2.x" "jinja2.ext.with_" "missing"; fi
+if [[ "$(apt-mark showhold 2>/dev/null)" == *tar* ]]; then ok "tar held" "$(dpkg-query -W -f='${Version}' tar)"; else bad "tar held" "1.34+dfsg-1build3 on hold" "not held"; fi
+
 if [[ -d /opt/nanopb ]]; then ok "nanopb" "/opt/nanopb"; else bad "nanopb" "/opt/nanopb" "missing"; fi
 check "gh" "$EXPECT_GH_VERSION" "$(gh --version 2>/dev/null | head -1 | awk '{print $3}')"
 
@@ -183,7 +193,7 @@ if [[ "$WANT_QCOM" == no ]]; then
     [[ "$PRODUCT" == buildroot ]] || note "qcom bundle" "not mounted by design: sdk builds packages only (no kernel/abl/modem)"
 fi
 if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == yes ]]; then
-    note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cqm22x-setup setup --full"
+    note "qcom bundle" "not installed (customer install) — modem/tz/boot builds need cavli-setup setup --internal"
 fi
 if [[ "$WANT_QCOM" == yes && "$CUSTOMER_MODE" == no ]]; then
 for p in /pkg/qct/software/HEXAGON_Tools /pkg/qct/software/llvm/release/arm \
