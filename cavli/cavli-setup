@@ -375,7 +375,7 @@ chunk_get() {
     got=$(stat -c%s "$out.part" 2>/dev/null || echo 0)
     if (( got != want )); then
         (( got < want )) || rm -f "$out.part"    # longer than the range: unusable. A shorter one is kept for resume.
-        log "$tag: failed after $tries tries at $got of $want bytes; re-run to resume (CAVLI_DL_MIN_BPS=0 never drops a slow connection)"
+        log "$tag: failed after $tries tries at $got of $want bytes; check the network or the asset; re-run to resume"
         return 1
     fi
     mv -f "$out.part" "$out"
