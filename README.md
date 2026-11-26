@@ -6,8 +6,8 @@ Docker build environments for Cavli firmware. Pick the README of your product:
 
 ## Quick start (cqm220, cqm212, cqm211, aq62)
 
-> **Does not work yet** (checked 2026-11-26): `main` has no `cavli/` (the URL returns 404) and image
-> `cqm22x-buildenv:1.1.7` is not on ghcr.io.
+> **Until PR #2 is merged**, `main` has no `cavli/`: download the script from the branch instead:
+> `wget https://raw.githubusercontent.com/cavli-wireless/docker/feature/cavli-setup/cavli/cavli-setup`
 
 Needs Linux, Docker, `wget`, `jq`, `curl`, `tar`, `zstd`, `sha256sum`, `flock`, and about 79 GB free for all four
 products.

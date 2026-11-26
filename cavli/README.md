@@ -4,9 +4,8 @@ One Docker container to build Cavli firmware: **cqm220**, **cqm212**, **cqm211**
 `cavli-setup` downloads the tools and creates the container `cavli_<user>`, which has your user name, uid/gid and
 `$HOME` path.
 
-> **The quick start does not work yet** (checked 2026-11-26): `main` has no `cavli/` directory, so the `wget` URL
-> returns 404, and the default image `cqm22x-buildenv:1.1.7` is not on ghcr.io, so `setup` stops with
-> `could not pull`. See [Troubleshooting](#troubleshooting).
+> **Until PR #2 is merged**, `main` has no `cavli/` directory and the `wget` URL below returns 404. Use
+> `wget https://raw.githubusercontent.com/cavli-wireless/docker/feature/cavli-setup/cavli/cavli-setup`
 
 ## Quick start
 
@@ -248,8 +247,8 @@ per-step logs (`build_boot.log`, `build_mpss.log`, `build_tz.log`): the exit cod
 
 | What you see | Cause and fix |
 |---|---|
-| `wget` returns 404 | `cavli/` is not on `main` yet. |
-| `could not pull ...cqm22x-buildenv:1.1.7` | The image is not on ghcr.io. Downloads already started keep running to their end and are kept, so a re-run does not fetch them again. For cqm220, cqm212 and cqm211, `CAVLI_IMAGE_TAG=1.1.6 ./cavli-setup setup cqm220 cqm212 cqm211` uses the published 1.1.6 (`setup` and `cqm-doctor` passed with it on 2026-11-26; no build was run). Set the same variable on later `setup` and `update`. aq62 needs the 1.1.7 host tools. |
+| `wget` returns 404 | `cavli/` is not on `main` until PR #2 is merged; use the branch URL at the top of this page. |
+| `could not pull ...cqm22x-buildenv:1.1.7` | Check the network and access to ghcr.io (no login is needed). Downloads already started keep running to their end and are kept, so a re-run does not fetch them again. For cqm220, cqm212 and cqm211, `CAVLI_IMAGE_TAG=1.1.6 ./cavli-setup setup cqm220 cqm212 cqm211` uses the published 1.1.6 (`setup` and `cqm-doctor` passed with it on 2026-11-26; no build was run). Set the same variable on later `setup` and `update`. aq62 needs the 1.1.7 host tools. |
 | `about N GB free needed` | Free disk, install fewer products, or move `CAVLI_ROOT`. `CAVLI_SKIP_SPACE_CHECK=1` skips the check. |
 | `-m ...: no such directory` | Create the directory first. |
 | `'cavli_...' already exists and this script did not create it` | Another install made it. Use `--name <x>` and your own `CAVLI_ROOT`. |
